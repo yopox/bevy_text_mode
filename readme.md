@@ -10,6 +10,7 @@ pub struct TextModeTextureAtlasSprite {
     pub index: usize,
     pub flip_x: bool,
     pub flip_y: bool,
+    pub rotation: u8,
     pub custom_size: Option<Vec2>,
     pub anchor: Anchor,
 }

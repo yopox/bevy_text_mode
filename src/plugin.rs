@@ -279,6 +279,7 @@ pub struct ExtractedTextModeSprite {
     pub image_handle_id: HandleId,
     pub flip_x: bool,
     pub flip_y: bool,
+    pub rotation: u8,
     pub anchor: Vec2,
 }
 
@@ -319,6 +320,7 @@ pub fn extract_sprites(
                 custom_size: atlas_sprite.custom_size,
                 flip_x: atlas_sprite.flip_x,
                 flip_y: atlas_sprite.flip_y,
+                rotation: atlas_sprite.rotation,
                 image_handle_id: texture_atlas.texture.id(),
                 anchor: atlas_sprite.anchor.as_vec(),
             });
@@ -524,6 +526,13 @@ pub fn queue_sprites(
                 // Calculate vertex data for this item
 
                 let mut uvs = QUAD_UVS;
+
+                uvs = match extracted_sprite.rotation % 4 {
+                    1 => [uvs[1], uvs[2], uvs[3], uvs[0]],
+                    2 => [uvs[2], uvs[3], uvs[0], uvs[1]],
+                    3 => [uvs[3], uvs[0], uvs[1], uvs[2]],
+                    _ => uvs
+                };
 
                 if extracted_sprite.flip_x {
                     uvs = [uvs[1], uvs[0], uvs[3], uvs[2]];
