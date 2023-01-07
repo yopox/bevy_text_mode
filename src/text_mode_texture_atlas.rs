@@ -5,6 +5,7 @@ use bevy::sprite::Anchor;
 pub struct TextModeTextureAtlasSprite {
     pub bg: Color,
     pub fg: Color,
+    pub alpha: f32,
     pub index: usize,
     pub flip_x: bool,
     pub flip_y: bool,
@@ -19,6 +20,7 @@ impl Default for TextModeTextureAtlasSprite {
             index: 0,
             bg: Color::WHITE,
             fg: Color::BLACK,
+            alpha: 1.0,
             flip_x: false,
             flip_y: false,
             rotation: 0,

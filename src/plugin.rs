@@ -202,6 +202,8 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
             VertexFormat::Float32x4,
             // fg
             VertexFormat::Float32x4,
+            // alpha
+            VertexFormat::Float32,
         ];
 
         let vertex_layout =
@@ -274,6 +276,7 @@ pub struct ExtractedTextModeSprite {
     pub transform: GlobalTransform,
     pub bg: Color,
     pub fg: Color,
+    pub alpha: f32,
     pub rect: Option<Rect>,
     pub custom_size: Option<Vec2>,
     pub image_handle_id: HandleId,
@@ -313,6 +316,7 @@ pub fn extract_sprites(
                 entity,
                 bg: atlas_sprite.bg,
                 fg: atlas_sprite.fg,
+                alpha: atlas_sprite.alpha,
                 transform: *transform,
                 // Select the area in the texture atlas
                 rect,
@@ -335,6 +339,7 @@ struct TextModeSpriteVertex {
     pub uv: [f32; 2],
     pub bg: [f32; 4],
     pub fg: [f32; 4],
+    pub alpha: f32,
 }
 
 
@@ -579,6 +584,7 @@ pub fn queue_sprites(
                         uv: uvs[i].into(),
                         bg: extracted_sprite.bg.as_linear_rgba_f32(),
                         fg: extracted_sprite.fg.as_linear_rgba_f32(),
+                        alpha: extracted_sprite.alpha,
                     });
                 }
                 let item_start = index;

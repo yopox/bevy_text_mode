@@ -20,6 +20,7 @@ struct VertexOutput {
     @location(0) uv: vec2<f32>,
     @location(1) bg: vec4<f32>,
     @location(2) fg: vec4<f32>,
+    @location(3) alpha: f32,
     @builtin(position) position: vec4<f32>,
 };
 
@@ -29,12 +30,14 @@ fn vertex(
     @location(1) vertex_uv: vec2<f32>,
     @location(2) vertex_bg: vec4<f32>,
     @location(3) vertex_fg: vec4<f32>,
+    @location(4) vertex_alpha: f32,
 ) -> VertexOutput {
     var out: VertexOutput;
     out.uv = vertex_uv;
     out.position = view.view_proj * vec4<f32>(vertex_position, 1.0);
     out.bg = vertex_bg;
     out.fg = vertex_fg;
+    out.alpha = vertex_alpha;
     return out;
 }
 
@@ -52,6 +55,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     } else {
         color = in.fg;
     }
+    color[3] = in.alpha;
 
 #ifdef TONEMAP_IN_SHADER
     color = vec4<f32>(reinhard_luminance(color.rgb), color.a);

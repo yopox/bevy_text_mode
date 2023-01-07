@@ -7,6 +7,7 @@ It makes it easy to use text mode tilesets such as [MRMOTEXT](https://mrmotarius
 pub struct TextModeTextureAtlasSprite {
     pub bg: Color,
     pub fg: Color,
+    pub alpha: f32,
     pub index: usize,
     pub flip_x: bool,
     pub flip_y: bool,
