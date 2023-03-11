@@ -2,20 +2,20 @@ use std::cmp::Ordering;
 use bevy::asset::HandleId;
 use bevy::core::{Pod, Zeroable};
 use bevy::core_pipeline::core_2d::Transparent2d;
-use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::ecs::system::lifetimeless::{Read, SQuery, SRes};
 use bevy::ecs::system::{SystemParamItem, SystemState};
 use bevy::prelude::*;
 use bevy::reflect::TypeUuid;
-use bevy::render::{Extract, RenderApp, RenderStage};
+use bevy::render::{Extract, RenderApp, RenderSet};
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_phase::*;
-use bevy::render::render_resource::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState, BufferBindingType, BufferUsages, BufferVec, ColorTargetState, ColorWrites, Extent3d, FragmentState, FrontFace, ImageCopyTexture, ImageDataLayout, MultisampleState, Origin3d, PipelineCache, PolygonMode, PrimitiveState, RenderPipelineDescriptor, SamplerBindingType, ShaderStages, ShaderType, SpecializedRenderPipeline, SpecializedRenderPipelines, TextureAspect, TextureDimension, TextureFormat, TextureSampleType, TextureViewDescriptor, TextureViewDimension, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode};
+use bevy::render::render_resource::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState, BufferBindingType, BufferUsages, BufferVec, ColorTargetState, ColorWrites, Extent3d, FragmentState, FrontFace, ImageCopyTexture, ImageDataLayout, MultisampleState, Origin3d, PipelineCache, PolygonMode, PrimitiveState, RenderPipelineDescriptor, SamplerBindingType, ShaderDefVal, ShaderStages, ShaderType, SpecializedRenderPipeline, SpecializedRenderPipelines, TextureAspect, TextureDimension, TextureFormat, TextureSampleType, TextureViewDescriptor, TextureViewDimension, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode};
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::texture::{BevyDefault, DefaultImageSampler, GpuImage, ImageSampler, TextureFormatPixelInfo};
 use bevy::render::view::{ExtractedView, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms, VisibleEntities};
-use bevy::sprite::SpriteAssetEvents;
+use bevy::sprite::{SetSpriteTextureBindGroup, SetSpriteViewBindGroup, SpriteAssetEvents, SpriteSystem};
 use bevy::utils::{FloatOrd, HashMap, Uuid};
 use fixedbitset::FixedBitSet;
 use crate::text_mode_texture_atlas::TextModeTextureAtlasSprite;
@@ -39,8 +39,16 @@ impl Plugin for TextModePlugin {
                 .init_resource::<TextModeSpriteMeta>()
                 .init_resource::<ExtractedTextModeSprites>()
                 .add_render_command::<Transparent2d, DrawTextModeSprite>()
-                .add_system_to_stage(RenderStage::Extract, extract_sprites)
-                .add_system_to_stage(RenderStage::Queue, queue_sprites)
+                .add_system(
+                    extract_sprites
+                        .in_set(SpriteSystem::ExtractSprites)
+                        .in_schedule(ExtractSchedule)
+                )
+                .add_system(
+                    queue_sprites
+                        .in_set(RenderSet::Queue)
+                        .ambiguous_with(bevy::sprite::queue_material2d_meshes::<ColorMaterial>),
+                )
             ;
         };
     }
@@ -98,12 +106,7 @@ impl FromWorld for TextModeSpritePipeline {
             label: Some("text_mode_sprite_material_layout"),
         });
         let dummy_white_gpu_image = {
-            let image = Image::new_fill(
-                Extent3d::default(),
-                TextureDimension::D2,
-                &[255u8; 4],
-                TextureFormat::bevy_default(),
-            );
+            let image = Image::default();
             let texture = render_device.create_texture(&image.texture_descriptor);
             let sampler = match image.sampler_descriptor {
                 ImageSampler::Default => (**default_sampler).clone(),
@@ -141,6 +144,7 @@ impl FromWorld for TextModeSpritePipeline {
                     image.texture_descriptor.size.width as f32,
                     image.texture_descriptor.size.height as f32,
                 ),
+                mip_level_count: image.texture_descriptor.mip_level_count,
             }
         };
 
@@ -154,8 +158,6 @@ impl FromWorld for TextModeSpritePipeline {
 
 bitflags::bitflags! {
     #[repr(transparent)]
-    // NOTE: Apparently quadro drivers support up to 64x MSAA.
-    // MSAA uses the highest 3 bits for the MSAA log2(sample count) to support up to 128x MSAA.
     pub struct TextModeSpritePipelineKey: u32 {
         const NONE                        = 0;
         const COLORED                     = (1 << 0);
@@ -163,24 +165,40 @@ bitflags::bitflags! {
         const TONEMAP_IN_SHADER           = (1 << 2);
         const DEBAND_DITHER               = (1 << 3);
         const MSAA_RESERVED_BITS          = Self::MSAA_MASK_BITS << Self::MSAA_SHIFT_BITS;
+        const TONEMAP_METHOD_RESERVED_BITS      = Self::TONEMAP_METHOD_MASK_BITS << Self::TONEMAP_METHOD_SHIFT_BITS;
+        const TONEMAP_METHOD_NONE               = 0 << Self::TONEMAP_METHOD_SHIFT_BITS;
+        const TONEMAP_METHOD_REINHARD           = 1 << Self::TONEMAP_METHOD_SHIFT_BITS;
+        const TONEMAP_METHOD_REINHARD_LUMINANCE = 2 << Self::TONEMAP_METHOD_SHIFT_BITS;
+        const TONEMAP_METHOD_ACES_FITTED        = 3 << Self::TONEMAP_METHOD_SHIFT_BITS;
+        const TONEMAP_METHOD_AGX                = 4 << Self::TONEMAP_METHOD_SHIFT_BITS;
+        const TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM = 5 << Self::TONEMAP_METHOD_SHIFT_BITS;
+        const TONEMAP_METHOD_TONY_MC_MAPFACE    = 6 << Self::TONEMAP_METHOD_SHIFT_BITS;
+        const TONEMAP_METHOD_BLENDER_FILMIC     = 7 << Self::TONEMAP_METHOD_SHIFT_BITS;
     }
 }
 
 impl TextModeSpritePipelineKey {
     const MSAA_MASK_BITS: u32 = 0b111;
     const MSAA_SHIFT_BITS: u32 = 32 - Self::MSAA_MASK_BITS.count_ones();
+    const TONEMAP_METHOD_MASK_BITS: u32 = 0b111;
+    const TONEMAP_METHOD_SHIFT_BITS: u32 =
+        Self::MSAA_SHIFT_BITS - Self::TONEMAP_METHOD_MASK_BITS.count_ones();
 
-    pub fn from_msaa_samples(msaa_samples: u32) -> Self {
+
+    #[inline]
+    pub const fn from_msaa_samples(msaa_samples: u32) -> Self {
         let msaa_bits =
             (msaa_samples.trailing_zeros() & Self::MSAA_MASK_BITS) << Self::MSAA_SHIFT_BITS;
-        Self::from_bits(msaa_bits).unwrap()
+        Self::from_bits_truncate(msaa_bits)
     }
 
-    pub fn msaa_samples(&self) -> u32 {
+    #[inline]
+    pub const fn msaa_samples(&self) -> u32 {
         1 << ((self.bits >> Self::MSAA_SHIFT_BITS) & Self::MSAA_MASK_BITS)
     }
 
-    pub fn from_hdr(hdr: bool) -> Self {
+    #[inline]
+    pub const fn from_hdr(hdr: bool) -> Self {
         if hdr {
             TextModeSpritePipelineKey::HDR
         } else {
@@ -193,7 +211,7 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
     type Key = TextModeSpritePipelineKey;
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
-        let formats = vec![
+        let mut formats = vec![
             // position
             VertexFormat::Float32x3,
             // uv
@@ -212,11 +230,11 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
         let mut shader_defs = Vec::new();
 
         if key.contains(TextModeSpritePipelineKey::TONEMAP_IN_SHADER) {
-            shader_defs.push("TONEMAP_IN_SHADER".to_string());
+            shader_defs.push("TONEMAP_IN_SHADER".into());
 
             // Debanding is tied to tonemapping in the shader, cannot run without it.
             if key.contains(TextModeSpritePipelineKey::DEBAND_DITHER) {
-                shader_defs.push("DEBAND_DITHER".to_string());
+                shader_defs.push("DEBAND_DITHER".into());
             }
         }
 
@@ -242,7 +260,7 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
                     write_mask: ColorWrites::ALL,
                 })],
             }),
-            layout: Some(vec![self.view_layout.clone(), self.material_layout.clone()]),
+            layout: vec![self.view_layout.clone(), self.material_layout.clone()],
             primitive: PrimitiveState {
                 front_face: FrontFace::Ccw,
                 cull_mode: None,
@@ -259,6 +277,7 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
                 alpha_to_coverage_enabled: false,
             },
             label: Some("text_mode_sprite_pipeline".into()),
+            push_constant_ranges: Vec::new(),
         }
     }
 }
@@ -402,6 +421,7 @@ pub fn queue_sprites(
         &VisibleEntities,
         &ExtractedView,
         Option<&Tonemapping>,
+        Option<&DebandDither>,
     )>,
     events: Res<SpriteAssetEvents>,
 ) {
@@ -415,7 +435,7 @@ pub fn queue_sprites(
         };
     }
 
-    let msaa_key = TextModeSpritePipelineKey::from_msaa_samples(msaa.samples);
+    let msaa_key = TextModeSpritePipelineKey::from_msaa_samples(msaa.samples());
 
     if let Some(view_binding) = view_uniforms.uniforms.binding() {
         let sprite_meta = &mut sprite_meta;
@@ -432,7 +452,7 @@ pub fn queue_sprites(
             layout: &sprite_pipeline.view_layout,
         }));
 
-        let draw_sprite_function = draw_functions.read().get_id::<DrawTextModeSprite>().unwrap();
+        let draw_sprite_function = draw_functions.read().id::<DrawTextModeSprite>();
 
         // Vertex buffer indices
         let mut index = 0;
@@ -453,15 +473,14 @@ pub fn queue_sprites(
         });
         let image_bind_groups = &mut *image_bind_groups;
 
-        for (mut transparent_phase, visible_entities, view, tonemapping) in &mut views {
+        for (mut transparent_phase, visible_entities, view, tonemapping, dither) in &mut views {
             let mut view_key = TextModeSpritePipelineKey::from_hdr(view.hdr) | msaa_key;
-            if let Some(Tonemapping::Enabled { deband_dither }) = tonemapping {
-                if !view.hdr {
+            if !view.hdr {
+                if let Some(tonemapping) = tonemapping {
                     view_key |= TextModeSpritePipelineKey::TONEMAP_IN_SHADER;
-
-                    if *deband_dither {
-                        view_key |= TextModeSpritePipelineKey::DEBAND_DITHER;
-                    }
+                }
+                if let Some(DebandDither::Enabled) = dither {
+                    view_key |= TextModeSpritePipelineKey::DEBAND_DITHER;
                 }
             }
             let pipeline = pipelines.specialize(
@@ -478,7 +497,7 @@ pub fn queue_sprites(
             let mut current_batch = TextModeSpriteBatch {
                 image_handle_id: HandleId::Id(Uuid::nil(), u64::MAX),
             };
-            let mut current_batch_entity = Entity::from_raw(u32::MAX);
+            let mut current_batch_entity = Entity::PLACEHOLDER;
             let mut current_image_size = Vec2::ZERO;
             // Add a phase item for each sprite, and detect when successive items can be batched.
             // Spawn an entity with a `SpriteBatch` component for each possible batch.
@@ -614,16 +633,18 @@ pub type DrawTextModeSprite = (
 );
 
 pub struct SetTextModeSpriteViewBindGroup<const I: usize>;
-impl<const I: usize> EntityRenderCommand for SetTextModeSpriteViewBindGroup<I> {
-    type Param = (SRes<TextModeSpriteMeta>, SQuery<Read<ViewUniformOffset>>);
+impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetTextModeSpriteViewBindGroup<I> {
+    type Param = SRes<TextModeSpriteMeta>;
+    type ViewWorldQuery = Read<ViewUniformOffset>;
+    type ItemWorldQuery = ();
 
     fn render<'w>(
-        view: Entity,
-        _item: Entity,
-        (sprite_meta, view_query): SystemParamItem<'w, '_, Self::Param>,
+        _item: &P,
+        view_uniform: &'_ ViewUniformOffset,
+        _entity: (),
+        sprite_meta: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        let view_uniform = view_query.get(view).unwrap();
         pass.set_bind_group(
             I,
             sprite_meta.into_inner().view_bind_group.as_ref().unwrap(),
@@ -633,16 +654,18 @@ impl<const I: usize> EntityRenderCommand for SetTextModeSpriteViewBindGroup<I> {
     }
 }
 pub struct SetTextModeSpriteTextureBindGroup<const I: usize>;
-impl<const I: usize> EntityRenderCommand for SetTextModeSpriteTextureBindGroup<I> {
-    type Param = (SRes<TextModeImageBindGroups>, SQuery<Read<TextModeSpriteBatch>>);
+impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetTextModeSpriteTextureBindGroup<I> {
+    type Param = SRes<TextModeImageBindGroups>;
+    type ViewWorldQuery = ();
+    type ItemWorldQuery = Read<TextModeSpriteBatch>;
 
     fn render<'w>(
-        _view: Entity,
-        item: Entity,
-        (image_bind_groups, query_batch): SystemParamItem<'w, '_, Self::Param>,
+        _item: &P,
+        _view: (),
+        sprite_batch: &'_ TextModeSpriteBatch,
+        image_bind_groups: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        let sprite_batch = query_batch.get(item).unwrap();
         let image_bind_groups = image_bind_groups.into_inner();
 
         pass.set_bind_group(
@@ -660,10 +683,13 @@ impl<const I: usize> EntityRenderCommand for SetTextModeSpriteTextureBindGroup<I
 pub struct DrawTextModeSpriteBatch;
 impl<P: BatchedPhaseItem> RenderCommand<P> for DrawTextModeSpriteBatch {
     type Param = SRes<TextModeSpriteMeta>;
+    type ViewWorldQuery = ();
+    type ItemWorldQuery = Read<TextModeSpriteBatch>;
 
     fn render<'w>(
-        _view: Entity,
         item: &P,
+        _view: (),
+        _sprite_batch: &'_ TextModeSpriteBatch,
         sprite_meta: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
