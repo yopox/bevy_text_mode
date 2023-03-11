@@ -1,5 +1,9 @@
 # bevy_text_mode
 
+<p align="center">
+    <img src="assets/promo.png" />
+</p>
+
 This plugin adds a `TextModeTextureAtlasSprite` component with configurable background and foreground colors.
 It makes it easy to use text mode tilesets such as [MRMOTEXT](https://mrmotarius.itch.io/mrmotext).
 
@@ -29,4 +33,4 @@ Compatibility of `bevy_kira_audio` versions:
 
 | `bevy_text_mode` | `bevy` |
 |:----------------:|:------:|
-|       0.1        | 0.9.1  |
+|       0.1        |  0.10  |
