@@ -1,10 +1,12 @@
 # bevy_text_mode
 
+[![bevy](https://img.shields.io/badge/bevy-v0.10.0-blue.svg)](https://github.com/bevyengine/bevy)
+
 <p align="center">
-    <img src="https://raw.githubusercontent.com/yopox/bevy_text_mode/main/assets/promo.png" />
+    <img src="https://raw.githubusercontent.com/yopox/bevy_text_mode/main/assets/promo.png#gh-light-mode-only" />
 </p>
 
-This plugin adds a `TextModeTextureAtlasSprite` component with configurable background and foreground colors.
+> `bevy_text_mode` adds a `TextModeTextureAtlasSprite` component with configurable background and foreground colors.
 It makes it easy to use text mode tilesets such as [MRMOTEXT](https://mrmotarius.itch.io/mrmotext).
 
 ```rust
@@ -27,10 +29,6 @@ Spawn a `TextModeSpriteSheetBundle` with desired background and foreground color
 
 ## Compatible Bevy versions
 
-The main branch is compatible with the latest Bevy release.
-
-Compatibility of `bevy_kira_audio` versions:
-
 | `bevy_text_mode` | `bevy` |
 |:----------------:|:------:|
-|       0.1        |  0.10  |
+|       0.1        | 0.10.0 |
