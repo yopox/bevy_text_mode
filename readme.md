@@ -1,7 +1,7 @@
 # bevy_text_mode
 
 <p align="center">
-    <img src="assets/promo.png" />
+    <img src="https://raw.githubusercontent.com/yopox/bevy_text_mode/main/assets/promo.png" />
 </p>
 
 This plugin adds a `TextModeTextureAtlasSprite` component with configurable background and foreground colors.
