@@ -1,23 +1,25 @@
 use std::cmp::Ordering;
+
 use bevy::asset::HandleId;
 use bevy::core::{Pod, Zeroable};
 use bevy::core_pipeline::core_2d::Transparent2d;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
-use bevy::ecs::system::lifetimeless::{Read, SQuery, SRes};
 use bevy::ecs::system::{SystemParamItem, SystemState};
+use bevy::ecs::system::lifetimeless::{Read, SRes};
 use bevy::prelude::*;
 use bevy::reflect::TypeUuid;
 use bevy::render::{Extract, RenderApp, RenderSet};
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_phase::*;
-use bevy::render::render_resource::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState, BufferBindingType, BufferUsages, BufferVec, ColorTargetState, ColorWrites, Extent3d, FragmentState, FrontFace, ImageCopyTexture, ImageDataLayout, MultisampleState, Origin3d, PipelineCache, PolygonMode, PrimitiveState, RenderPipelineDescriptor, SamplerBindingType, ShaderDefVal, ShaderStages, ShaderType, SpecializedRenderPipeline, SpecializedRenderPipelines, TextureAspect, TextureDimension, TextureFormat, TextureSampleType, TextureViewDescriptor, TextureViewDimension, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode};
+use bevy::render::render_resource::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState, BufferBindingType, BufferUsages, BufferVec, ColorTargetState, ColorWrites, FragmentState, FrontFace, ImageCopyTexture, ImageDataLayout, MultisampleState, Origin3d, PipelineCache, PolygonMode, PrimitiveState, RenderPipelineDescriptor, SamplerBindingType, ShaderStages, ShaderType, SpecializedRenderPipeline, SpecializedRenderPipelines, TextureAspect, TextureFormat, TextureSampleType, TextureViewDescriptor, TextureViewDimension, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode};
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::texture::{BevyDefault, DefaultImageSampler, GpuImage, ImageSampler, TextureFormatPixelInfo};
 use bevy::render::view::{ExtractedView, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms, VisibleEntities};
-use bevy::sprite::{SetSpriteTextureBindGroup, SetSpriteViewBindGroup, SpriteAssetEvents, SpriteSystem};
+use bevy::sprite::{SpriteAssetEvents, SpriteSystem};
 use bevy::utils::{FloatOrd, HashMap, Uuid};
 use fixedbitset::FixedBitSet;
+
 use crate::text_mode_texture_atlas::TextModeTextureAtlasSprite;
 
 const SPRITE_SHADER_HANDLE: HandleUntyped =
@@ -211,7 +213,7 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
     type Key = TextModeSpritePipelineKey;
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
-        let mut formats = vec![
+        let formats = vec![
             // position
             VertexFormat::Float32x3,
             // uv
@@ -476,7 +478,7 @@ pub fn queue_sprites(
         for (mut transparent_phase, visible_entities, view, tonemapping, dither) in &mut views {
             let mut view_key = TextModeSpritePipelineKey::from_hdr(view.hdr) | msaa_key;
             if !view.hdr {
-                if let Some(tonemapping) = tonemapping {
+                if tonemapping.is_some() {
                     view_key |= TextModeSpritePipelineKey::TONEMAP_IN_SHADER;
                 }
                 if let Some(DebandDither::Enabled) = dither {
