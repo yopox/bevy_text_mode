@@ -42,11 +42,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = textureSample(sprite_texture, sprite_sampler, in.uv);
 
     if (color[0] == 0.0) {
-    color = in.bg;
+        color = in.bg;
+        color[3] = in.alpha * in.bg[3];
     } else {
-    color = in.fg;
+        color = in.fg;
+        color[3] = in.alpha * in.fg[3];
     }
-    color[3] = in.alpha;
 
     #ifdef TONEMAP_IN_SHADER
     color = tone_mapping(color);

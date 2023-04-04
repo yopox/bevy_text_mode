@@ -1,7 +1,7 @@
 [package]
 name = "bevy_text_mode"
 description = "Bevy plugin adding a texture atlas sprite with configurable background and foreground colors."
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["yopox yopoxdev@gmail.com"]
 homepage = "https://github.com/yopox/bevy_text_mode"
