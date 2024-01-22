@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use bevy::asset::HandleId;
+use bevy::asset::load_internal_asset;
 use bevy::core::{Pod, Zeroable};
 use bevy::core_pipeline::core_2d::Transparent2d;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
@@ -8,11 +9,11 @@ use bevy::ecs::system::{SystemParamItem, SystemState};
 use bevy::ecs::system::lifetimeless::{Read, SRes};
 use bevy::prelude::*;
 use bevy::reflect::TypeUuid;
-use bevy::render::{Extract, RenderApp, RenderSet};
+use bevy::render::{Extract, Render, RenderApp, RenderSet};
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_phase::*;
-use bevy::render::render_resource::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState, BufferBindingType, BufferUsages, BufferVec, ColorTargetState, ColorWrites, FragmentState, FrontFace, ImageCopyTexture, ImageDataLayout, MultisampleState, Origin3d, PipelineCache, PolygonMode, PrimitiveState, RenderPipelineDescriptor, SamplerBindingType, ShaderStages, ShaderType, SpecializedRenderPipeline, SpecializedRenderPipelines, TextureAspect, TextureFormat, TextureSampleType, TextureViewDescriptor, TextureViewDimension, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode};
+use bevy::render::render_resource::{BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState, BufferBindingType, BufferUsages, BufferVec, ColorTargetState, ColorWrites, FragmentState, FrontFace, ImageCopyTexture, ImageDataLayout, MultisampleState, Origin3d, PipelineCache, PolygonMode, PrimitiveState, RenderPipelineDescriptor, SamplerBindingType, Shader, ShaderStages, ShaderType, SpecializedRenderPipeline, SpecializedRenderPipelines, TextureAspect, TextureFormat, TextureSampleType, TextureViewDescriptor, TextureViewDimension, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode};
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::texture::{BevyDefault, DefaultImageSampler, GpuImage, ImageSampler, TextureFormatPixelInfo};
 use bevy::render::view::{ExtractedView, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms, VisibleEntities};
@@ -29,30 +30,38 @@ pub struct TextModePlugin;
 
 impl Plugin for TextModePlugin {
     fn build(&self, app: &mut App) {
-        let mut shaders = app.world.resource_mut::<Assets<Shader>>();
-        let sprite_shader = Shader::from_wgsl(include_str!("text_mode_sprite.wgsl"));
-        shaders.set_untracked(SPRITE_SHADER_HANDLE, sprite_shader);
+        load_internal_asset!(
+            app,
+            SPRITE_SHADER_HANDLE,
+            "text_mode_sprite.wgsl",
+            Shader::from_wgsl
+        );
 
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
-                .init_resource::<TextModeSpritePipeline>()
                 .init_resource::<SpecializedRenderPipelines<TextModeSpritePipeline>>()
                 .init_resource::<TextModeImageBindGroups>()
                 .init_resource::<TextModeSpriteMeta>()
                 .init_resource::<ExtractedTextModeSprites>()
                 .add_render_command::<Transparent2d, DrawTextModeSprite>()
-                .add_system(
-                    extract_sprites
-                        .in_set(SpriteSystem::ExtractSprites)
-                        .in_schedule(ExtractSchedule)
+                .add_systems(
+                    ExtractSchedule,
+                    extract_sprites.in_set(SpriteSystem::ExtractSprites)
                 )
-                .add_system(
+                .add_systems(
+                    Render,
                     queue_sprites
                         .in_set(RenderSet::Queue)
                         .ambiguous_with(bevy::sprite::queue_material2d_meshes::<ColorMaterial>),
                 )
             ;
         };
+    }
+
+    fn finish(&self, app: &mut App) {
+        if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
+            render_app.init_resource::<TextModeSpritePipeline>();
+        }
     }
 }
 
@@ -126,12 +135,7 @@ impl FromWorld for TextModeSpritePipeline {
                 &image.data,
                 ImageDataLayout {
                     offset: 0,
-                    bytes_per_row: Some(
-                        std::num::NonZeroU32::new(
-                            image.texture_descriptor.size.width * format_size as u32,
-                        )
-                            .unwrap(),
-                    ),
+                    bytes_per_row: Some(image.texture_descriptor.size.width * format_size as u32),
                     rows_per_image: None,
                 },
                 image.texture_descriptor.size,
@@ -159,6 +163,7 @@ impl FromWorld for TextModeSpritePipeline {
 }
 
 bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     #[repr(transparent)]
     pub struct TextModeSpritePipelineKey: u32 {
         const NONE                        = 0;
@@ -196,7 +201,7 @@ impl TextModeSpritePipelineKey {
 
     #[inline]
     pub const fn msaa_samples(&self) -> u32 {
-        1 << ((self.bits >> Self::MSAA_SHIFT_BITS) & Self::MSAA_MASK_BITS)
+        1 << ((self.bits() >> Self::MSAA_SHIFT_BITS) & Self::MSAA_MASK_BITS)
     }
 
     #[inline]
@@ -274,7 +279,7 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
             },
             depth_stencil: None,
             multisample: MultisampleState {
-                count: key.msaa_samples(),
+                count: 4,
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },

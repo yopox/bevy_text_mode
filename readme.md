@@ -31,4 +31,5 @@ Spawn a `TextModeSpriteSheetBundle` with desired background and foreground color
 
 | `bevy_text_mode` | `bevy` |
 |:----------------:|:------:|
+|       0.2        |  0.11  |
 |      0.1.1       |  0.10  |

@@ -1,19 +1,24 @@
+[dependencies.bevy]
+version = "0.11"
+
+[dependencies.bitflags]
+version = "2.3.3"
+
+[dependencies.bytemuck]
+version = "1.7"
+
+[dependencies.fixedbitset]
+version = "0.4.2"
+
 [package]
-name = "bevy_text_mode"
-description = "Bevy plugin adding a texture atlas sprite with configurable background and foreground colors."
-version = "0.1.1"
-edition = "2021"
 authors = ["yopox yopoxdev@gmail.com"]
-homepage = "https://github.com/yopox/bevy_text_mode"
-repository = "https://github.com/yopox/bevy_text_mode"
-license = "Apache-2.0"
-keywords = ["bevy", "2d", "graphics", "textmode", "palette"]
-readme = "readme.md"
+description = "Bevy plugin adding a texture atlas sprite with configurable background and foreground colors."
+edition = "2021"
 exclude = ["assets/", "examples/"]
-
-[dependencies]
-bevy = "0.10.0"
-
-bitflags = "1.3.2"
-bytemuck = "1.7"
-fixedbitset = "0.4.2"
+homepage = "https://github.com/yopox/bevy_text_mode"
+keywords = ["bevy", "2d", "graphics", "textmode", "palette"]
+license = "Apache-2.0"
+name = "bevy_text_mode"
+readme = "readme.md"
+repository = "https://github.com/yopox/bevy_text_mode"
+version = "0.2.0"
