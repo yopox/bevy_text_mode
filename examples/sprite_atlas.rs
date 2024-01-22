@@ -19,8 +19,8 @@ fn main() {
             })
         )
         .insert_resource(ClearColor(Color::WHITE))
-        .add_plugin(TextModePlugin)
-        .add_startup_system(init)
+        .add_plugins(TextModePlugin)
+        .add_systems(Startup, init)
         .run();
 }
 
@@ -71,7 +71,7 @@ fn init(
 ) {
     let tileset: Handle<Image> = server.load("texmod.png");
     let texture_atlas = TextureAtlas::from_grid(
-        tileset,
+        tileset.clone(),
         Vec2::new(8.0, 8.0), 6, 1,
         None, None
     );
