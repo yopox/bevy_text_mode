@@ -2,22 +2,21 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
 #[derive(Component, Debug, Clone, Reflect)]
-pub struct TextModeTextureAtlasSprite {
+pub struct TextModeSprite {
     pub bg: Color,
     pub fg: Color,
     pub alpha: f32,
-    pub index: usize,
     pub flip_x: bool,
     pub flip_y: bool,
     pub rotation: u8,
     pub custom_size: Option<Vec2>,
+    pub rect: Option<Rect>,
     pub anchor: Anchor,
 }
 
-impl Default for TextModeTextureAtlasSprite {
+impl Default for TextModeSprite {
     fn default() -> Self {
         Self {
-            index: 0,
             bg: Color::WHITE,
             fg: Color::BLACK,
             alpha: 1.0,
@@ -25,17 +24,19 @@ impl Default for TextModeTextureAtlasSprite {
             flip_y: false,
             rotation: 0,
             custom_size: None,
+            rect: None,
             anchor: Anchor::default(),
         }
     }
 }
 
 #[derive(Bundle, Clone, Default)]
-pub struct TextModeSpriteSheetBundle {
-    pub sprite: TextModeTextureAtlasSprite,
-    pub texture_atlas: Handle<TextureAtlas>,
+pub struct TextModeSpriteBundle {
+    pub sprite: TextModeSprite,
     pub transform: Transform,
     pub global_transform: GlobalTransform,
+    pub texture: Handle<Image>,
+    pub atlas: TextureAtlas,
     pub visibility: Visibility,
     pub inherited_visibility: InheritedVisibility,
     pub view_visibility: ViewVisibility,
