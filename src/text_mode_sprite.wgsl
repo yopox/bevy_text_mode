@@ -19,7 +19,6 @@ struct VertexInput {
     @location(4) i_fg: vec4<f32>,
     @location(5) i_alpha: f32,
     @location(6) i_uv_offset_scale: vec4<f32>,
-    @location(7) i_pad: vec3<f32>,
 }
 
 struct VertexOutput {

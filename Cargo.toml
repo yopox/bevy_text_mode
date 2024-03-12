@@ -1,5 +1,5 @@
 [dependencies.bevy]
-version = "0.12.1"
+version = "0.13"
 
 [dependencies.bitflags]
 version = "2.3"
@@ -10,6 +10,9 @@ features = ["derive"]
 
 [dependencies.fixedbitset]
 version = "0.4"
+
+[dependencies.bevy_sprite]
+version = "0.13"
 
 [package]
 authors = ["yopox yopoxdev@gmail.com"]

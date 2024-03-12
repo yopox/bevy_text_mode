@@ -1,9 +1,10 @@
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
-use bevy_text_mode::{TextModePlugin, TextModeSpriteSheetBundle, TextModeTextureAtlasSprite};
+
+use bevy_text_mode::{TextModePlugin, TextModeSprite, TextModeSpriteBundle};
 
 const WIDTH: f32 = 8. * 8. * 8.;
-const HEIGHT: f32 = 4. * 8. * 8.;
+const HEIGHT: f32 = 7. * 8. * 8.;
 
 fn main() {
     App::new()
@@ -67,15 +68,11 @@ impl Into<Color> for Light {
 fn init(
     mut commands: Commands,
     server: Res<AssetServer>,
-    mut texture_atlases: ResMut<Assets<TextureAtlas>>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     let tileset: Handle<Image> = server.load("texmod.png");
-    let texture_atlas = TextureAtlas::from_grid(
-        tileset.clone(),
-        Vec2::new(8.0, 8.0), 6, 1,
-        None, None
-    );
-    let handle = texture_atlases.add(texture_atlas);
+    let layout = TextureAtlasLayout::from_grid(Vec2::new(8., 8.), 7, 1, None, None);
+    let handle = texture_atlas_layouts.add(layout);
 
     commands.spawn(Camera2dBundle {
         transform: Transform {
@@ -97,15 +94,49 @@ fn init(
         (5, 2, 5, Light::ORANGE.into(), Dark::ORANGE.into()),
         (6, 2, 1, Light::WHITE.into(), Dark::PINK.into()),
     ] {
-        commands.spawn(TextModeSpriteSheetBundle {
-            sprite: TextModeTextureAtlasSprite {
-                index: i,
+        commands.spawn(TextModeSpriteBundle {
+            sprite: TextModeSprite {
                 bg,
                 fg,
                 anchor: Anchor::TopLeft,
                 ..default()
             },
-            texture_atlas: handle.clone(),
+            atlas: TextureAtlas {
+                layout: handle.clone(),
+                index: i,
+            },
+            texture: tileset.clone(),
+            transform: Transform::from_xyz(8. * x as f32, -8. * y as f32, 0.),
+            ..default()
+        });
+    }
+
+    for (x, y, i, flip_x, flip_y, rotation) in [
+        (1, 4, 6, false, false, 0),
+        (2, 4, 6, false, false, 1),
+        (3, 4, 6, false, false, 2),
+        (4, 4, 6, false, false, 3),
+
+        (3, 5, 6, false, false, 0),
+        (4, 5, 6, true, false, 0),
+        (5, 5, 6, false, true, 0),
+        (6, 5, 6, true, true, 0),
+    ] {
+        commands.spawn(TextModeSpriteBundle {
+            sprite: TextModeSprite {
+                bg: Light::WHITE.into(),
+                fg: Dark::BLACK.into(),
+                flip_x,
+                flip_y,
+                rotation,
+                anchor: Anchor::TopLeft,
+                ..default()
+            },
+            atlas: TextureAtlas {
+                layout: handle.clone(),
+                index: i,
+            },
+            texture: tileset.clone(),
             transform: Transform::from_xyz(8. * x as f32, -8. * y as f32, 0.),
             ..default()
         });
