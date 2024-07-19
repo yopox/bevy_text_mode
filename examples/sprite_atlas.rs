@@ -19,7 +19,7 @@ fn main() {
                 ..default()
             })
         )
-        .insert_resource(ClearColor(Color::WHITE))
+        .insert_resource(ClearColor(Color::BLACK))
         .add_plugins(TextModePlugin)
         .add_systems(Startup, init)
         .run();
@@ -33,14 +33,14 @@ enum Dark {
     PINK,
 }
 
-impl Into<Color> for Dark {
-    fn into(self) -> Color {
+impl Into<LinearRgba> for Dark {
+    fn into(self) -> LinearRgba {
         match self {
-            Dark::BLACK => Color::BLACK,
-            Dark::BLUE => Color::hex("305182").unwrap(),
-            Dark::GREEN => Color::hex("386900").unwrap(),
-            Dark::ORANGE => Color::hex("a23000").unwrap(),
-            Dark::PINK => Color::hex("9a2079").unwrap(),
+            Dark::BLACK => LinearRgba::from(Srgba::BLACK),
+            Dark::BLUE => LinearRgba::from(Srgba::hex("305182").unwrap()),
+            Dark::GREEN => LinearRgba::from(Srgba::hex("386900").unwrap()),
+            Dark::ORANGE => LinearRgba::from(Srgba::hex("a23000").unwrap()),
+            Dark::PINK => LinearRgba::from(Srgba::hex("9a2079").unwrap()),
         }
     }
 }
@@ -53,14 +53,14 @@ enum Light {
     PINK,
 }
 
-impl Into<Color> for Light {
-    fn into(self) -> Color {
+impl Into<LinearRgba> for Light {
+    fn into(self) -> LinearRgba {
         match self {
-            Light::WHITE => Color::WHITE,
-            Light::BLUE => Color::hex("a2fff3").unwrap(),
-            Light::GREEN => Color::hex("cbf382").unwrap(),
-            Light::ORANGE => Color::hex("ffcbba").unwrap(),
-            Light::PINK => Color::hex("e3b2ff").unwrap(),
+            Light::WHITE => LinearRgba::from(Srgba::WHITE),
+            Light::BLUE => LinearRgba::from(Srgba::hex("a2fff3").unwrap()),
+            Light::GREEN => LinearRgba::from(Srgba::hex("cbf382").unwrap()),
+            Light::ORANGE => LinearRgba::from(Srgba::hex("ffcbba").unwrap()),
+            Light::PINK => LinearRgba::from(Srgba::hex("e3b2ff").unwrap()),
         }
     }
 }
@@ -71,7 +71,7 @@ fn init(
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     let tileset: Handle<Image> = server.load("texmod.png");
-    let layout = TextureAtlasLayout::from_grid(Vec2::new(8., 8.), 7, 1, None, None);
+    let layout = TextureAtlasLayout::from_grid(UVec2::new(8, 8), 7, 1, None, None);
     let handle = texture_atlas_layouts.add(layout);
 
     commands.spawn(Camera2dBundle {

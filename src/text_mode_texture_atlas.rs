@@ -3,8 +3,8 @@ use bevy::sprite::Anchor;
 
 #[derive(Component, Debug, Clone, Reflect)]
 pub struct TextModeSprite {
-    pub bg: Color,
-    pub fg: Color,
+    pub bg: LinearRgba,
+    pub fg: LinearRgba,
     pub alpha: f32,
     pub flip_x: bool,
     pub flip_y: bool,
@@ -17,8 +17,8 @@ pub struct TextModeSprite {
 impl Default for TextModeSprite {
     fn default() -> Self {
         Self {
-            bg: Color::WHITE,
-            fg: Color::BLACK,
+            bg: Color::WHITE.to_linear(),
+            fg: Color::BLACK.to_linear(),
             alpha: 1.0,
             flip_x: false,
             flip_y: false,

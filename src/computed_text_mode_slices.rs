@@ -8,6 +8,7 @@ use crate::TextModeSprite;
 /// Component storing texture slices for sprite entities with a [`ImageScaleMode`]
 ///
 /// This component is automatically inserted and updated
+/// See [bevy_sprite::ComputedTextureSlices]
 #[derive(Debug, Clone, Component)]
 pub struct ComputedTextModeTextureSlices(Vec<TextureSlice>);
 
@@ -42,20 +43,31 @@ impl ComputedTextModeTextureSlices {
             let offset = (slice.offset * flip).extend(0.0);
             let transform = transform.mul_transform(Transform::from_translation(offset));
             TextModeExtractedSprite {
-                transform,
+                original_entity: Some(original_entity),
                 bg: sprite.bg,
                 fg: sprite.fg,
                 alpha: sprite.alpha,
+                transform,
+                rect: Some(slice.texture_rect),
                 custom_size: Some(slice.draw_size),
-                image_handle_id: handle.id(),
                 flip_x,
                 flip_y,
                 rotation: sprite.rotation,
-                anchor: sprite.anchor.as_vec(),
-                rect: sprite.rect,
-                original_entity: Some(original_entity),
+                image_handle_id: handle.id(),
+                anchor: Self::redepend_anchor_from_sprite_to_slice(sprite, slice),
             }
         })
+    }
+
+    fn redepend_anchor_from_sprite_to_slice(sprite: &TextModeSprite, slice: &TextureSlice) -> Vec2 {
+        let sprite_size = sprite
+            .custom_size
+            .unwrap_or(sprite.rect.unwrap_or_default().size());
+        if sprite_size == Vec2::ZERO {
+            sprite.anchor.as_vec()
+        } else {
+            sprite.anchor.as_vec() * sprite_size / slice.draw_size
+        }
     }
 }
 
@@ -63,37 +75,55 @@ impl ComputedTextModeTextureSlices {
 /// will be computed according to the `image_handle` dimensions or the sprite rect.
 ///
 /// Returns `None` if the image asset is not loaded
+///
+/// # Arguments
+///
+/// * `sprite` - The text mode sprite component, will be used to find the draw area size
+/// * `scale_mode` - The image scaling component
+/// * `image_handle` - The texture to slice or tile
+/// * `images` - The image assets, use to retrieve the image dimensions
+/// * `atlas` - Optional texture atlas, if set the slicing will happen on the matching sub section
+/// of the texture
+/// * `atlas_layouts` - The atlas layout assets, used to retrieve the texture atlas section rect
 #[must_use]
 fn compute_text_mode_sprite_slices(
     sprite: &TextModeSprite,
     scale_mode: &ImageScaleMode,
     image_handle: &Handle<Image>,
     images: &Assets<Image>,
+    atlas: Option<&TextureAtlas>,
+    atlas_layouts: &Assets<TextureAtlasLayout>,
 ) -> Option<ComputedTextModeTextureSlices> {
-    let image_size = images.get(image_handle).map(|i| {
-        Vec2::new(
-            i.texture_descriptor.size.width as f32,
-            i.texture_descriptor.size.height as f32,
-        )
-    })?;
-    let slices = match scale_mode {
-        ImageScaleMode::Sliced(slicer) => slicer.compute_slices(
-            Rect {
+    let (image_size, texture_rect) = match atlas {
+        Some(a) => {
+            let layout = atlas_layouts.get(&a.layout)?;
+            (
+                layout.size.as_vec2(),
+                layout.textures.get(a.index)?.as_rect(),
+            )
+        }
+        None => {
+            let image = images.get(image_handle)?;
+            let size = Vec2::new(
+                image.texture_descriptor.size.width as f32,
+                image.texture_descriptor.size.height as f32,
+            );
+            let rect = sprite.rect.unwrap_or(Rect {
                 min: Vec2::ZERO,
-                max: image_size,
-            },
-            sprite.custom_size,
-        ),
+                max: size,
+            });
+            (size, rect)
+        }
+    };
+    let slices = match scale_mode {
+        ImageScaleMode::Sliced(slicer) => slicer.compute_slices(texture_rect, sprite.custom_size),
         ImageScaleMode::Tiled {
             tile_x,
             tile_y,
             stretch_value,
         } => {
             let slice = TextureSlice {
-                texture_rect: Rect {
-                    min: Vec2::ZERO,
-                    max: image_size,
-                },
+                texture_rect,
                 draw_size: sprite.custom_size.unwrap_or(image_size),
                 offset: Vec2::ZERO,
             };
@@ -109,7 +139,14 @@ pub(crate) fn compute_text_mode_slices_on_asset_event(
     mut commands: Commands,
     mut events: EventReader<AssetEvent<Image>>,
     images: Res<Assets<Image>>,
-    sprites: Query<(Entity, &ImageScaleMode, &TextModeSprite, &Handle<Image>)>,
+    atlas_layouts: Res<Assets<TextureAtlasLayout>>,
+    sprites: Query<(
+        Entity,
+        &ImageScaleMode,
+        &TextModeSprite,
+        &Handle<Image>,
+        Option<&TextureAtlas>,
+    )>,
 ) {
     // We store the asset ids of added/modified image assets
     let added_handles: HashSet<_> = events
@@ -123,11 +160,18 @@ pub(crate) fn compute_text_mode_slices_on_asset_event(
         return;
     }
     // We recompute the sprite slices for sprite entities with a matching asset handle id
-    for (entity, scale_mode, sprite, image_handle) in &sprites {
+    for (entity, scale_mode, sprite, image_handle, atlas) in &sprites {
         if !added_handles.contains(&image_handle.id()) {
             continue;
         }
-        if let Some(slices) = compute_text_mode_sprite_slices(sprite, scale_mode, image_handle, &images) {
+        if let Some(slices) = compute_text_mode_sprite_slices(
+            sprite,
+            scale_mode,
+            image_handle,
+            &images,
+            atlas,
+            &atlas_layouts,
+        ) {
             commands.entity(entity).insert(slices);
         }
     }
@@ -138,17 +182,32 @@ pub(crate) fn compute_text_mode_slices_on_asset_event(
 pub(crate) fn compute_text_mode_slices_on_sprite_change(
     mut commands: Commands,
     images: Res<Assets<Image>>,
+    atlas_layouts: Res<Assets<TextureAtlasLayout>>,
     changed_sprites: Query<
-        (Entity, &ImageScaleMode, &TextModeSprite, &Handle<Image>),
+        (
+            Entity,
+            &ImageScaleMode,
+            &TextModeSprite,
+            &Handle<Image>,
+            Option<&TextureAtlas>,
+        ),
         Or<(
             Changed<ImageScaleMode>,
             Changed<Handle<Image>>,
             Changed<TextModeSprite>,
+            Changed<TextureAtlas>,
         )>,
     >,
 ) {
-    for (entity, scale_mode, sprite, image_handle) in &changed_sprites {
-        if let Some(slices) = compute_text_mode_sprite_slices(sprite, scale_mode, image_handle, &images) {
+    for (entity, scale_mode, sprite, image_handle, atlas) in &changed_sprites {
+        if let Some(slices) = compute_text_mode_sprite_slices(
+            sprite,
+            scale_mode,
+            image_handle,
+            &images,
+            atlas,
+            &atlas_layouts,
+        ) {
             commands.entity(entity).insert(slices);
         }
     }
