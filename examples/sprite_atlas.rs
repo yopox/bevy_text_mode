@@ -1,3 +1,4 @@
+use bevy::image::{TextureAtlas, TextureAtlasLayout};
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 
@@ -8,16 +9,17 @@ const HEIGHT: f32 = 7. * 8. * 8.;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins
-            .set(ImagePlugin::default_nearest())
-            .set(WindowPlugin {
-                primary_window: Some(Window {
-                    resolution: (WIDTH, HEIGHT).into(),
-                    title: "bevy_text_mode".into(),
+        .add_plugins(
+            DefaultPlugins
+                .set(ImagePlugin::default_nearest())
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        resolution: (WIDTH as u32, HEIGHT as u32).into(),
+                        title: "bevy_text_mode".into(),
+                        ..default()
+                    }),
                     ..default()
                 }),
-                ..default()
-            })
         )
         .insert_resource(ClearColor(Color::BLACK))
         .add_plugins(TextModePlugin)
@@ -74,21 +76,20 @@ fn init(
     let layout = TextureAtlasLayout::from_grid(UVec2::new(8, 8), 7, 1, None, None);
     let handle = texture_atlas_layouts.add(layout);
 
-    commands.spawn(Camera2dBundle {
-        transform: Transform {
+    commands.spawn((
+        Camera2d,
+        Transform {
             translation: Vec3::new(WIDTH / 8. / 2., -HEIGHT / 8. / 2., 0.),
             scale: Vec3::new(1. / 8., 1. / 8., 1.),
             ..default()
         },
-        ..default()
-    });
+    ));
 
     for (x, y, i, bg, fg) in [
         (1, 1, 0, Light::WHITE.into(), Dark::BLUE.into()),
         (2, 1, 1, Light::GREEN.into(), Dark::GREEN.into()),
         (3, 1, 2, Light::WHITE.into(), Dark::ORANGE.into()),
         (4, 1, 0, Light::PINK.into(), Dark::PINK.into()),
-
         (3, 2, 3, Light::BLUE.into(), Dark::BLUE.into()),
         (4, 2, 4, Light::WHITE.into(), Dark::GREEN.into()),
         (5, 2, 5, Light::ORANGE.into(), Dark::ORANGE.into()),
@@ -98,14 +99,14 @@ fn init(
             sprite: TextModeSprite {
                 bg,
                 fg,
-                anchor: Anchor::TopLeft,
+                anchor: Anchor::TOP_LEFT,
+                image: tileset.clone(),
+                texture_atlas: Some(TextureAtlas {
+                    layout: handle.clone(),
+                    index: i,
+                }),
                 ..default()
             },
-            atlas: TextureAtlas {
-                layout: handle.clone(),
-                index: i,
-            },
-            texture: tileset.clone(),
             transform: Transform::from_xyz(8. * x as f32, -8. * y as f32, 0.),
             ..default()
         });
@@ -116,7 +117,6 @@ fn init(
         (2, 4, 6, false, false, 1),
         (3, 4, 6, false, false, 2),
         (4, 4, 6, false, false, 3),
-
         (3, 5, 6, false, false, 0),
         (4, 5, 6, true, false, 0),
         (5, 5, 6, false, true, 0),
@@ -129,14 +129,14 @@ fn init(
                 flip_x,
                 flip_y,
                 rotation,
-                anchor: Anchor::TopLeft,
+                anchor: Anchor::TOP_LEFT,
+                image: tileset.clone(),
+                texture_atlas: Some(TextureAtlas {
+                    layout: handle.clone(),
+                    index: i,
+                }),
                 ..default()
             },
-            atlas: TextureAtlas {
-                layout: handle.clone(),
-                index: i,
-            },
-            texture: tileset.clone(),
             transform: Transform::from_xyz(8. * x as f32, -8. * y as f32, 0.),
             ..default()
         });

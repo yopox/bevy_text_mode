@@ -1,59 +1,80 @@
 use std::f32::consts::PI;
 use std::ops::Range;
 
-use bevy::asset::load_internal_asset;
-use bevy::core_pipeline::core_2d::Transparent2d;
-use bevy::core_pipeline::tonemapping::{DebandDither, get_lut_bind_group_layout_entries, get_lut_bindings, Tonemapping, TonemappingLuts};
-use bevy::ecs::entity::EntityHashMap;
+use bevy::asset::{
+    embedded_asset, load_embedded_asset, AssetEvent, AssetId, AssetServer, Assets, Handle,
+};
+use bevy::color::{ColorToComponents, LinearRgba};
+use bevy::core_pipeline::core_2d::{Transparent2d, CORE_2D_DEPTH_FORMAT};
+use bevy::core_pipeline::tonemapping::{
+    get_lut_bind_group_layout_entries, get_lut_bindings, DebandDither, Tonemapping, TonemappingLuts,
+};
 use bevy::ecs::query::ROQueryItem;
-use bevy::ecs::system::{SystemParamItem, SystemState};
-use bevy::ecs::system::lifetimeless::{Read, SRes};
-use bevy::math::{Affine3A, FloatOrd};
+use bevy::ecs::system::{lifetimeless::*, SystemParamItem};
+use bevy::image::{Image, TextureAtlasLayout};
+use bevy::math::{Affine3A, FloatOrd, Rect, Vec2, Vec4};
+use bevy::mesh::VertexBufferLayout;
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use bevy::render::{Extract, Render, RenderApp, RenderSet};
-use bevy::render::mesh::PrimitiveTopology;
+use bevy::render::camera::ExtractedCamera;
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_phase::*;
-use bevy::render::render_resource::{BindGroup, BindGroupEntries, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BindGroupLayoutEntry, BindingType, BlendState, BufferBindingType, BufferUsages, BufferVec, ColorTargetState, ColorWrites, FragmentState, FrontFace, ImageCopyTexture, ImageDataLayout, IndexFormat, MultisampleState, Origin3d, PipelineCache, PolygonMode, PrimitiveState, RawBufferVec, RenderPipelineDescriptor, SamplerBindingType, ShaderDefVal, ShaderStages, ShaderType, SpecializedRenderPipeline, SpecializedRenderPipelines, TextureAspect, TextureFormat, TextureSampleType, TextureViewDescriptor, TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode};
 use bevy::render::render_resource::binding_types::{sampler, texture_2d, uniform_buffer};
-use bevy::render::render_resource::VertexFormat::Float32;
+use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderDevice, RenderQueue};
-use bevy::render::texture::{BevyDefault, DefaultImageSampler, FallbackImage, GpuImage, ImageSampler, TextureFormatPixelInfo};
-use bevy::render::view::{check_visibility, ExtractedView, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms, VisibilitySystems, VisibleEntities};
-use bevy::sprite::{queue_material2d_meshes, SpriteAssetEvents, SpriteSystem};
-use bevy::utils::HashMap;
-use bevy_sprite::{calculate_bounds_2d, SpriteSource, SpriteViewBindGroup, WithMesh2d, WithSprite};
+use bevy::render::sync_world::{RenderEntity, SyncToRenderWorld};
+use bevy::render::texture::{FallbackImage, GpuImage};
+use bevy::render::view::{
+    texture_format_from_code, texture_format_to_code, ExtractedView, Msaa, RenderVisibleEntities,
+    RetainedViewEntity, ViewUniform, ViewUniformOffset, ViewUniforms,
+};
+use bevy::render::{
+    Extract, ExtractSchedule, GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
+};
+use bevy::shader::{Shader, ShaderDefVal};
+use bevy::sprite_render::{queue_material2d_meshes, ColorMaterial, SpriteSystems};
+use bevy::transform::components::GlobalTransform;
 use bytemuck::{Pod, Zeroable};
 use fixedbitset::FixedBitSet;
 
-use crate::computed_text_mode_slices::{compute_text_mode_slices_on_asset_event, compute_text_mode_slices_on_sprite_change, ComputedTextModeTextureSlices};
+use crate::computed_text_mode_slices::{
+    compute_text_mode_slices_on_asset_event, compute_text_mode_slices_on_sprite_change,
+    ComputedTextModeTextureSlices,
+};
 use crate::TextModeSprite;
-
-const SPRITE_SHADER_HANDLE: Handle<Shader> = Handle::weak_from_u128(1354325909327402345);
 
 pub struct TextModePlugin;
 
 impl Plugin for TextModePlugin {
     fn build(&self, app: &mut App) {
-        load_internal_asset!(
-            app,
-            SPRITE_SHADER_HANDLE,
-            "text_mode_sprite.wgsl",
-            Shader::from_wgsl
+        embedded_asset!(app, "text_mode_sprite.wgsl");
+
+        app.register_required_components::<TextModeSprite, SyncToRenderWorld>();
+
+        app.add_systems(
+            PostUpdate,
+            (
+                compute_text_mode_slices_on_asset_event.before(bevy::asset::AssetEventSystems),
+                compute_text_mode_slices_on_sprite_change,
+            )
+                .in_set(SpriteSystems::ComputeSlices),
         );
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<TextModeImageBindGroups>()
-                .init_resource::<SpecializedRenderPipelines<TextModeSpritePipeline>>()
+                .init_gpu_resource::<SpecializedRenderPipelines<TextModeSpritePipeline>>()
                 .init_resource::<TextModeSpriteMeta>()
                 .init_resource::<ExtractedTextModeSprites>()
+                .init_resource::<ExtractedTextModeSlices>()
                 .init_resource::<TextModeSpriteAssetEvents>()
+                .init_resource::<TextModeSpriteBatches>()
                 .add_render_command::<Transparent2d, DrawTextModeSprite>()
+                .add_systems(RenderStartup, init_text_mode_sprite_pipeline)
                 .add_systems(
                     ExtractSchedule,
                     (
-                        extract_text_mode_sprites.in_set(SpriteSystem::ExtractSprites),
+                        extract_text_mode_sprites.in_set(SpriteSystems::ExtractSprites),
                         extract_text_mode_sprite_events,
                     ),
                 )
@@ -61,119 +82,55 @@ impl Plugin for TextModePlugin {
                     Render,
                     (
                         queue_text_mode_sprites
-                            .in_set(RenderSet::Queue)
+                            .in_set(RenderSystems::Queue)
                             .ambiguous_with(queue_material2d_meshes::<ColorMaterial>),
-                        prepare_text_mode_sprite_image_bind_groups.in_set(RenderSet::PrepareBindGroups),
-                        prepare_text_mode_sprite_view_bind_groups.in_set(RenderSet::PrepareBindGroups),
+                        prepare_text_mode_sprite_image_bind_groups
+                            .in_set(RenderSystems::PrepareBindGroups),
+                        prepare_text_mode_sprite_view_bind_groups
+                            .in_set(RenderSystems::PrepareBindGroups),
                     ),
                 );
         };
-
-        app
-            .add_systems(
-                PostUpdate,
-                (
-                    calculate_bounds_2d.in_set(VisibilitySystems::CalculateBounds),
-                    check_visibility::<With<TextModeSprite>>.in_set(VisibilitySystems::CheckVisibility),
-                    (
-                        compute_text_mode_slices_on_asset_event,
-                        compute_text_mode_slices_on_sprite_change,
-                    )
-                        .in_set(SpriteSystem::ComputeSlices),
-                ),
-            );
-    }
-
-    fn finish(&self, app: &mut App) {
-        if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.init_resource::<TextModeSpritePipeline>();
-        }
     }
 }
 
 #[derive(Resource)]
 pub struct TextModeSpritePipeline {
-    view_layout: BindGroupLayout,
-    material_layout: BindGroupLayout,
-    pub dummy_white_gpu_image: GpuImage,
+    view_layout: BindGroupLayoutDescriptor,
+    material_layout: BindGroupLayoutDescriptor,
+    shader: Handle<Shader>,
 }
 
-impl FromWorld for TextModeSpritePipeline {
-    fn from_world(world: &mut World) -> Self {
-        let mut system_state: SystemState<(
-            Res<RenderDevice>,
-            Res<DefaultImageSampler>,
-            Res<RenderQueue>,
-        )> = SystemState::new(world);
-        let (render_device, default_sampler, render_queue) = system_state.get_mut(world);
-
-        let tonemapping_lut_entries = get_lut_bind_group_layout_entries();
-        let view_layout = render_device.create_bind_group_layout(
-            "sprite_view_layout",
-            &BindGroupLayoutEntries::with_indices(
-                ShaderStages::VERTEX_FRAGMENT,
-                (
-                    (0, uniform_buffer::<ViewUniform>(true)),
-                    (
-                        1,
-                        tonemapping_lut_entries[0].visibility(ShaderStages::FRAGMENT),
-                    ),
-                    (
-                        2,
-                        tonemapping_lut_entries[1].visibility(ShaderStages::FRAGMENT),
-                    ),
-                ),
+pub fn init_text_mode_sprite_pipeline(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let tonemapping_lut_entries = get_lut_bind_group_layout_entries();
+    let view_layout = BindGroupLayoutDescriptor::new(
+        "text_mode_sprite_view_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::VERTEX_FRAGMENT,
+            (
+                uniform_buffer::<ViewUniform>(true),
+                tonemapping_lut_entries[0].visibility(ShaderStages::FRAGMENT),
+                tonemapping_lut_entries[1].visibility(ShaderStages::FRAGMENT),
             ),
-        );
+        ),
+    );
 
-        let material_layout = render_device.create_bind_group_layout(
-            "text_sprite_material_layout",
-            &BindGroupLayoutEntries::sequential(
-                ShaderStages::FRAGMENT,
-                (
-                    texture_2d(TextureSampleType::Float { filterable: true }),
-                    sampler(SamplerBindingType::Filtering),
-                ),
+    let material_layout = BindGroupLayoutDescriptor::new(
+        "text_mode_sprite_material_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
             ),
-        );
-        let dummy_white_gpu_image = {
-            let image = Image::default();
-            let texture = render_device.create_texture(&image.texture_descriptor);
-            let sampler = match image.sampler {
-                ImageSampler::Default => (**default_sampler).clone(),
-                ImageSampler::Descriptor(ref descriptor) => {
-                    render_device.create_sampler(&descriptor.as_wgpu())
-                }
-            };
+        ),
+    );
 
-            let format_size = image.texture_descriptor.format.pixel_size();
-            render_queue.write_texture(
-                texture.as_image_copy(),
-                &image.data,
-                ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(image.width() * format_size as u32),
-                    rows_per_image: None,
-                },
-                image.texture_descriptor.size,
-            );
-            let texture_view = texture.create_view(&TextureViewDescriptor::default());
-            GpuImage {
-                texture,
-                texture_view,
-                texture_format: image.texture_descriptor.format,
-                sampler,
-                size: image.size(),
-                mip_level_count: image.texture_descriptor.mip_level_count,
-            }
-        };
-
-        TextModeSpritePipeline {
-            view_layout,
-            material_layout,
-            dummy_white_gpu_image,
-        }
-    }
+    commands.insert_resource(TextModeSpritePipeline {
+        view_layout,
+        material_layout,
+        shader: load_embedded_asset!(asset_server.as_ref(), "text_mode_sprite.wgsl"),
+    });
 }
 
 bitflags::bitflags! {
@@ -181,10 +138,11 @@ bitflags::bitflags! {
     #[repr(transparent)]
     pub struct TextModeSpritePipelineKey: u32 {
         const NONE                              = 0;
-        const COLORED                           = 1 << 0;
-        const HDR                               = 1 << 1;
-        const TONEMAP_IN_SHADER                 = 1 << 2;
-        const DEBAND_DITHER                     = 1 << 3;
+        const TONEMAP_IN_SHADER                 = 1 << 0;
+        const DEBAND_DITHER                     = 1 << 1;
+        const SRGB_COMPOSITING                  = 1 << 2;
+        const OKLAB_COMPOSITING                 = 1 << 3;
+        const COLOR_TARGET_FORMAT_RESERVED_BITS = Self::COLOR_TARGET_FORMAT_MASK_BITS << Self::COLOR_TARGET_FORMAT_SHIFT_BITS;
         const MSAA_RESERVED_BITS                = Self::MSAA_MASK_BITS << Self::MSAA_SHIFT_BITS;
         const TONEMAP_METHOD_RESERVED_BITS      = Self::TONEMAP_METHOD_MASK_BITS << Self::TONEMAP_METHOD_SHIFT_BITS;
         const TONEMAP_METHOD_NONE               = 0 << Self::TONEMAP_METHOD_SHIFT_BITS;
@@ -195,13 +153,16 @@ bitflags::bitflags! {
         const TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM = 5 << Self::TONEMAP_METHOD_SHIFT_BITS;
         const TONEMAP_METHOD_TONY_MC_MAPFACE    = 6 << Self::TONEMAP_METHOD_SHIFT_BITS;
         const TONEMAP_METHOD_BLENDER_FILMIC     = 7 << Self::TONEMAP_METHOD_SHIFT_BITS;
+        const TONEMAP_METHOD_PBR_NEUTRAL        = 8 << Self::TONEMAP_METHOD_SHIFT_BITS;
     }
 }
 
 impl TextModeSpritePipelineKey {
+    const COLOR_TARGET_FORMAT_MASK_BITS: u32 = bevy::render::view::COLOR_TARGET_FORMAT_MASK_BITS;
+    const COLOR_TARGET_FORMAT_SHIFT_BITS: u32 = 4;
     const MSAA_MASK_BITS: u32 = 0b111;
     const MSAA_SHIFT_BITS: u32 = 32 - Self::MSAA_MASK_BITS.count_ones();
-    const TONEMAP_METHOD_MASK_BITS: u32 = 0b111;
+    const TONEMAP_METHOD_MASK_BITS: u32 = 0b1111;
     const TONEMAP_METHOD_SHIFT_BITS: u32 =
         Self::MSAA_SHIFT_BITS - Self::TONEMAP_METHOD_MASK_BITS.count_ones();
 
@@ -218,12 +179,20 @@ impl TextModeSpritePipelineKey {
     }
 
     #[inline]
-    pub const fn from_hdr(hdr: bool) -> Self {
-        if hdr {
-            TextModeSpritePipelineKey::HDR
-        } else {
-            TextModeSpritePipelineKey::NONE
-        }
+    pub fn from_target_format(format: TextureFormat) -> Self {
+        let code = texture_format_to_code(format)
+            .expect("Texture format is not supported by the pipeline") as u32;
+        Self::from_bits_retain(
+            (code & Self::COLOR_TARGET_FORMAT_MASK_BITS) << Self::COLOR_TARGET_FORMAT_SHIFT_BITS,
+        )
+    }
+
+    #[inline]
+    pub fn target_format(&self) -> TextureFormat {
+        let code = ((self.bits() >> Self::COLOR_TARGET_FORMAT_SHIFT_BITS)
+            & Self::COLOR_TARGET_FORMAT_MASK_BITS) as u8;
+        texture_format_from_code(code)
+            .expect("Unknown bits in `COLOR_TARGET_FORMAT_MASK_BITS` of the pipeline key")
     }
 }
 
@@ -256,13 +225,16 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
                 shader_defs.push("TONEMAP_METHOD_ACES_FITTED".into());
             } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_AGX {
                 shader_defs.push("TONEMAP_METHOD_AGX".into());
-            } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM
+            } else if method
+                == TextModeSpritePipelineKey::TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM
             {
                 shader_defs.push("TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM".into());
             } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_BLENDER_FILMIC {
                 shader_defs.push("TONEMAP_METHOD_BLENDER_FILMIC".into());
             } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_TONY_MC_MAPFACE {
                 shader_defs.push("TONEMAP_METHOD_TONY_MC_MAPFACE".into());
+            } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_PBR_NEUTRAL {
+                shader_defs.push("TONEMAP_METHOD_PBR_NEUTRAL".into());
             }
 
             // Debanding is tied to tonemapping in the shader, cannot run without it.
@@ -271,10 +243,14 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
             }
         }
 
-        let format = match key.contains(TextModeSpritePipelineKey::HDR) {
-            true => ViewTarget::TEXTURE_FORMAT_HDR,
-            false => TextureFormat::bevy_default(),
-        };
+        if key.contains(TextModeSpritePipelineKey::SRGB_COMPOSITING) {
+            shader_defs.push("SRGB_OUTPUT".into());
+        }
+        if key.contains(TextModeSpritePipelineKey::OKLAB_COMPOSITING) {
+            shader_defs.push("OKLAB_OUTPUT".into());
+        }
+
+        let format = key.target_format();
 
         let instance_rate_vertex_buffer_layout = VertexBufferLayout {
             array_stride: 112,
@@ -333,62 +309,89 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
 
         RenderPipelineDescriptor {
             vertex: VertexState {
-                shader: SPRITE_SHADER_HANDLE,
-                entry_point: "vertex".into(),
+                shader: self.shader.clone(),
                 shader_defs: shader_defs.clone(),
                 buffers: vec![instance_rate_vertex_buffer_layout],
+                ..default()
             },
             fragment: Some(FragmentState {
-                shader: SPRITE_SHADER_HANDLE,
+                shader: self.shader.clone(),
                 shader_defs,
-                entry_point: "fragment".into(),
                 targets: vec![Some(ColorTargetState {
                     format,
                     blend: Some(BlendState::ALPHA_BLENDING),
                     write_mask: ColorWrites::ALL,
                 })],
+                ..default()
             }),
             layout: vec![self.view_layout.clone(), self.material_layout.clone()],
-            primitive: PrimitiveState {
-                front_face: FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: PolygonMode::Fill,
-                conservative: false,
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-            },
-            depth_stencil: None,
+            depth_stencil: Some(DepthStencilState {
+                format: CORE_2D_DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(CompareFunction::GreaterEqual),
+                stencil: StencilState {
+                    front: StencilFaceState::IGNORE,
+                    back: StencilFaceState::IGNORE,
+                    read_mask: 0,
+                    write_mask: 0,
+                },
+                bias: DepthBiasState {
+                    constant: 0,
+                    slope_scale: 0.0,
+                    clamp: 0.0,
+                },
+            }),
             multisample: MultisampleState {
                 count: key.msaa_samples(),
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             },
             label: Some("text_mode_sprite_pipeline".into()),
-            push_constant_ranges: Vec::new(),
+            ..default()
         }
     }
 }
 
-/// See [bevy::sprite::ExtractedSprite]
+pub struct TextModeExtractedSlice {
+    pub offset: Vec2,
+    pub rect: Rect,
+    pub size: Vec2,
+}
+
+/// See [bevy::sprite_render::ExtractedSprite]
 pub struct TextModeExtractedSprite {
+    pub main_entity: Entity,
+    pub render_entity: Entity,
     pub transform: GlobalTransform,
     pub bg: LinearRgba,
     pub fg: LinearRgba,
     pub alpha: f32,
-    pub custom_size: Option<Vec2>,
-    pub rect: Option<Rect>,
+    pub rotation: u8,
     pub image_handle_id: AssetId<Image>,
     pub flip_x: bool,
     pub flip_y: bool,
-    pub rotation: u8,
-    pub anchor: Vec2,
-    pub original_entity: Option<Entity>,
+    pub kind: TextModeExtractedSpriteKind,
+}
+
+pub enum TextModeExtractedSpriteKind {
+    /// A single sprite with custom sizing options
+    Single {
+        anchor: Vec2,
+        rect: Option<Rect>,
+        custom_size: Option<Vec2>,
+    },
+    /// Indexes into the list of [`TextModeExtractedSlice`]s stored in the [`ExtractedTextModeSlices`] resource
+    Slices { indices: Range<usize> },
 }
 
 #[derive(Resource, Default)]
 pub struct ExtractedTextModeSprites {
-    pub sprites: EntityHashMap<TextModeExtractedSprite>,
+    pub sprites: Vec<TextModeExtractedSprite>,
+}
+
+#[derive(Resource, Default)]
+pub struct ExtractedTextModeSlices {
+    pub slices: Vec<TextModeExtractedSlice>,
 }
 
 #[derive(Resource, Default)]
@@ -398,7 +401,7 @@ pub struct TextModeSpriteAssetEvents {
 
 pub fn extract_text_mode_sprite_events(
     mut events: ResMut<TextModeSpriteAssetEvents>,
-    mut image_events: Extract<EventReader<AssetEvent<Image>>>,
+    mut image_events: Extract<MessageReader<AssetEvent<Image>>>,
 ) {
     let TextModeSpriteAssetEvents { ref mut images } = *events;
     images.clear();
@@ -408,68 +411,86 @@ pub fn extract_text_mode_sprite_events(
     }
 }
 
-/// See [bevy::sprite::extract_sprites]
+/// See [bevy::sprite_render::extract_sprites]
 pub fn extract_text_mode_sprites(
-    mut commands: Commands,
     mut extracted_sprites: ResMut<ExtractedTextModeSprites>,
+    mut extracted_slices: ResMut<ExtractedTextModeSlices>,
     texture_atlases: Extract<Res<Assets<TextureAtlasLayout>>>,
     sprite_query: Extract<
         Query<(
             Entity,
+            RenderEntity,
             &ViewVisibility,
             &TextModeSprite,
             &GlobalTransform,
-            &Handle<Image>,
-            Option<&TextureAtlas>,
             Option<&ComputedTextModeTextureSlices>,
         )>,
     >,
 ) {
     extracted_sprites.sprites.clear();
-    for (entity, view_visibility, sprite, transform, handle, sheet, slices) in sprite_query.iter() {
+    extracted_slices.slices.clear();
+    for (main_entity, render_entity, view_visibility, sprite, transform, slices) in
+        sprite_query.iter()
+    {
         if !view_visibility.get() {
             continue;
         }
 
         if let Some(slices) = slices {
-            extracted_sprites.sprites.extend(
-                slices
-                    .extract_text_mode_sprites(transform, entity, sprite, handle)
-                    .map(|e| (commands.spawn_empty().id(), e))
-            );
+            let start = extracted_slices.slices.len();
+            extracted_slices
+                .slices
+                .extend(slices.extract_text_mode_slices(sprite, sprite.anchor.as_vec()));
+            let end = extracted_slices.slices.len();
+            extracted_sprites.sprites.push(TextModeExtractedSprite {
+                main_entity,
+                render_entity,
+                bg: sprite.bg,
+                fg: sprite.fg,
+                alpha: sprite.alpha,
+                rotation: sprite.rotation,
+                transform: *transform,
+                flip_x: sprite.flip_x,
+                flip_y: sprite.flip_y,
+                image_handle_id: sprite.image.id(),
+                kind: TextModeExtractedSpriteKind::Slices {
+                    indices: start..end,
+                },
+            });
         } else {
-            let atlas_rect = sheet.and_then(|s| s.texture_rect(&texture_atlases));
+            let atlas_rect = sprite
+                .texture_atlas
+                .as_ref()
+                .and_then(|s| s.texture_rect(&texture_atlases).map(|r| r.as_rect()));
             let rect = match (atlas_rect, sprite.rect) {
                 (None, None) => None,
                 (None, Some(sprite_rect)) => Some(sprite_rect),
-                (Some(atlas_rect), None) => Some(atlas_rect.as_rect()),
+                (Some(atlas_rect), None) => Some(atlas_rect),
                 (Some(atlas_rect), Some(mut sprite_rect)) => {
-                    sprite_rect.min += atlas_rect.min.as_vec2();
-                    sprite_rect.max += atlas_rect.min.as_vec2();
-
+                    sprite_rect.min += atlas_rect.min;
+                    sprite_rect.max += atlas_rect.min;
                     Some(sprite_rect)
                 }
             };
 
-            extracted_sprites.sprites.insert(
-                entity,
-                TextModeExtractedSprite {
-                    bg: sprite.bg,
-                    fg: sprite.fg,
-                    alpha: sprite.alpha,
-                    transform: *transform,
-                    // Select the area in the texture atlas
+            extracted_sprites.sprites.push(TextModeExtractedSprite {
+                main_entity,
+                render_entity,
+                bg: sprite.bg,
+                fg: sprite.fg,
+                alpha: sprite.alpha,
+                rotation: sprite.rotation,
+                transform: *transform,
+                flip_x: sprite.flip_x,
+                flip_y: sprite.flip_y,
+                image_handle_id: sprite.image.id(),
+                kind: TextModeExtractedSpriteKind::Single {
+                    anchor: sprite.anchor.as_vec(),
                     rect,
                     // Pass the custom size
                     custom_size: sprite.custom_size,
-                    flip_x: sprite.flip_x,
-                    flip_y: sprite.flip_y,
-                    rotation: sprite.rotation,
-                    image_handle_id: handle.id(),
-                    anchor: sprite.anchor.as_vec(),
-                    original_entity: None,
                 },
-            );
+            });
         }
     }
 }
@@ -487,7 +508,13 @@ struct TextModeSpriteInstance {
 
 impl TextModeSpriteInstance {
     #[inline]
-    fn from(transform: &Affine3A, bg: &LinearRgba, fg: &LinearRgba, alpha: f32, uv_offset_scale: &Vec4) -> Self {
+    fn from(
+        transform: &Affine3A,
+        bg: &LinearRgba,
+        fg: &LinearRgba,
+        alpha: f32,
+        uv_offset_scale: &Vec4,
+    ) -> Self {
         let transpose_model_3x3 = transform.matrix3.transpose();
         Self {
             i_model_transpose: [
@@ -504,7 +531,7 @@ impl TextModeSpriteInstance {
     }
 }
 
-/// See [bevy::sprite::SpriteMeta]
+/// See [bevy::sprite_render::SpriteMeta]
 #[derive(Resource)]
 pub struct TextModeSpriteMeta {
     sprite_index_buffer: RawBufferVec<u32>,
@@ -515,7 +542,9 @@ impl Default for TextModeSpriteMeta {
     fn default() -> Self {
         Self {
             sprite_index_buffer: RawBufferVec::<u32>::new(BufferUsages::INDEX),
-            sprite_instance_buffer: RawBufferVec::<TextModeSpriteInstance>::new(BufferUsages::VERTEX),
+            sprite_instance_buffer: RawBufferVec::<TextModeSpriteInstance>::new(
+                BufferUsages::VERTEX,
+            ),
         }
     }
 }
@@ -525,7 +554,10 @@ pub struct TextModeSpriteViewBindGroup {
     pub value: BindGroup,
 }
 
-#[derive(Component, PartialEq, Eq, Clone)]
+#[derive(Resource, Deref, DerefMut, Default)]
+pub struct TextModeSpriteBatches(HashMap<(RetainedViewEntity, Entity), TextModeSpriteBatch>);
+
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct TextModeSpriteBatch {
     image_handle_id: AssetId<Image>,
     range: Range<u32>,
@@ -536,7 +568,7 @@ pub struct TextModeImageBindGroups {
     values: HashMap<AssetId<Image>, BindGroup>,
 }
 
-/// See [bevy::sprite::queue_sprites]
+/// See [bevy::sprite_render::queue_sprites]
 #[allow(clippy::too_many_arguments)]
 pub fn queue_text_mode_sprites(
     mut view_entities: Local<FixedBitSet>,
@@ -544,29 +576,43 @@ pub fn queue_text_mode_sprites(
     sprite_pipeline: Res<TextModeSpritePipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<TextModeSpritePipeline>>,
     pipeline_cache: Res<PipelineCache>,
-    msaa: Res<Msaa>,
     extracted_sprites: Res<ExtractedTextModeSprites>,
     mut transparent_render_phases: ResMut<ViewSortedRenderPhases<Transparent2d>>,
-    mut views: Query<(
-        Entity,
-        &VisibleEntities,
+    mut cameras: Query<(
+        &RenderVisibleEntities,
+        &ExtractedCamera,
         &ExtractedView,
+        &Msaa,
         Option<&Tonemapping>,
         Option<&DebandDither>,
     )>,
 ) {
-    let msaa_key = TextModeSpritePipelineKey::from_msaa_samples(msaa.samples());
-
     let draw_sprite_function = draw_functions.read().id::<DrawTextModeSprite>();
 
-    for (view_entity, visible_entities, view, tonemapping, dither) in &mut views {
-        let Some(transparent_phase) = transparent_render_phases.get_mut(&view_entity) else {
+    for (visible_entities, camera, view, msaa, tonemapping, dither) in &mut cameras {
+        let Some(transparent_phase) = transparent_render_phases.get_mut(&view.retained_view_entity)
+        else {
             continue;
         };
 
-        let mut view_key = TextModeSpritePipelineKey::from_hdr(view.hdr) | msaa_key;
+        let msaa_key = TextModeSpritePipelineKey::from_msaa_samples(msaa.samples());
+        let mut view_key =
+            TextModeSpritePipelineKey::from_target_format(view.target_format) | msaa_key;
 
-        if !view.hdr {
+        if camera
+            .compositing_space
+            .is_some_and(|s| s == bevy::camera::CompositingSpace::Srgb)
+        {
+            view_key |= TextModeSpritePipelineKey::SRGB_COMPOSITING;
+        }
+        if camera
+            .compositing_space
+            .is_some_and(|s| s == bevy::camera::CompositingSpace::Oklab)
+        {
+            view_key |= TextModeSpritePipelineKey::OKLAB_COMPOSITING;
+        }
+
+        if !camera.hdr {
             if let Some(tonemapping) = tonemapping {
                 view_key |= TextModeSpritePipelineKey::TONEMAP_IN_SHADER;
                 view_key |= match tonemapping {
@@ -575,13 +621,22 @@ pub fn queue_text_mode_sprites(
                     Tonemapping::ReinhardLuminance => {
                         TextModeSpritePipelineKey::TONEMAP_METHOD_REINHARD_LUMINANCE
                     }
-                    Tonemapping::AcesFitted => TextModeSpritePipelineKey::TONEMAP_METHOD_ACES_FITTED,
+                    Tonemapping::AcesFitted => {
+                        TextModeSpritePipelineKey::TONEMAP_METHOD_ACES_FITTED
+                    }
                     Tonemapping::AgX => TextModeSpritePipelineKey::TONEMAP_METHOD_AGX,
                     Tonemapping::SomewhatBoringDisplayTransform => {
                         TextModeSpritePipelineKey::TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM
                     }
-                    Tonemapping::TonyMcMapface => TextModeSpritePipelineKey::TONEMAP_METHOD_TONY_MC_MAPFACE,
-                    Tonemapping::BlenderFilmic => TextModeSpritePipelineKey::TONEMAP_METHOD_BLENDER_FILMIC,
+                    Tonemapping::TonyMcMapface => {
+                        TextModeSpritePipelineKey::TONEMAP_METHOD_TONY_MC_MAPFACE
+                    }
+                    Tonemapping::BlenderFilmic => {
+                        TextModeSpritePipelineKey::TONEMAP_METHOD_BLENDER_FILMIC
+                    }
+                    Tonemapping::KhronosPbrNeutral => {
+                        TextModeSpritePipelineKey::TONEMAP_METHOD_PBR_NEUTRAL
+                    }
                 };
             }
             if let Some(DebandDither::Enabled) = dither {
@@ -589,23 +644,25 @@ pub fn queue_text_mode_sprites(
             }
         }
 
-        let pipeline = pipelines.specialize(&pipeline_cache, &sprite_pipeline, view_key,);
+        let pipeline = pipelines.specialize(&pipeline_cache, &sprite_pipeline, view_key);
 
         view_entities.clear();
-        view_entities.extend(
-            visible_entities
-                .iter::<With<TextModeSprite>>()
-                .map(|e| e.index() as usize),
-        );
+        if let Some(visible_entities) = visible_entities.get::<TextModeSprite>() {
+            view_entities.extend(
+                visible_entities
+                    .iter_visible()
+                    .map(|(_, e)| e.index_u32() as usize),
+            );
+        }
 
         transparent_phase
             .items
             .reserve(extracted_sprites.sprites.len());
 
-        for (entity, extracted_sprite) in extracted_sprites.sprites.iter() {
-            let index = extracted_sprite.original_entity.unwrap_or(*entity).index();
+        for (index, extracted_sprite) in extracted_sprites.sprites.iter().enumerate() {
+            let view_index = extracted_sprite.main_entity.index_u32();
 
-            if !view_entities.contains(index as usize) {
+            if !view_entities.contains(view_index as usize) {
                 continue;
             }
 
@@ -613,14 +670,19 @@ pub fn queue_text_mode_sprites(
             let sort_key = FloatOrd(extracted_sprite.transform.translation().z);
 
             // Add the item to the render phase
-            transparent_phase.add(Transparent2d {
+            transparent_phase.add_transient(Transparent2d {
                 draw_function: draw_sprite_function,
                 pipeline,
-                entity: *entity,
+                entity: (
+                    extracted_sprite.render_entity,
+                    extracted_sprite.main_entity.into(),
+                ),
                 sort_key,
-                // batch_range and dynamic_offset will be calculated in prepare_sprites
+                // `batch_range` is calculated in `prepare_text_mode_sprite_image_bind_groups`
                 batch_range: 0..0,
-                extra_index: PhaseItemExtraIndex::NONE,
+                extra_index: PhaseItemExtraIndex::None,
+                extracted_index: index,
+                indexed: true,
             });
         }
     }
@@ -630,6 +692,7 @@ pub fn queue_text_mode_sprites(
 pub fn prepare_text_mode_sprite_view_bind_groups(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
+    pipeline_cache: Res<PipelineCache>,
     sprite_pipeline: Res<TextModeSpritePipeline>,
     view_uniforms: Res<ViewUniforms>,
     views: Query<(Entity, &Tonemapping), With<ExtractedView>>,
@@ -645,13 +708,9 @@ pub fn prepare_text_mode_sprite_view_bind_groups(
         let lut_bindings =
             get_lut_bindings(&images, &tonemapping_luts, tonemapping, &fallback_image);
         let view_bind_group = render_device.create_bind_group(
-            "mesh2d_view_bind_group",
-            &sprite_pipeline.view_layout,
-            &BindGroupEntries::with_indices((
-                (0, view_binding.clone()),
-                (1, lut_bindings.0),
-                (2, lut_bindings.1),
-            )),
+            "text_mode_sprite_view_bind_group",
+            &pipeline_cache.get_bind_group_layout(&sprite_pipeline.view_layout),
+            &BindGroupEntries::sequential((view_binding.clone(), lut_bindings.0, lut_bindings.1)),
         );
 
         commands.entity(entity).insert(TextModeSpriteViewBindGroup {
@@ -662,22 +721,24 @@ pub fn prepare_text_mode_sprite_view_bind_groups(
 
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_text_mode_sprite_image_bind_groups(
-    mut commands: Commands,
-    mut previous_len: Local<usize>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
+    pipeline_cache: Res<PipelineCache>,
     mut sprite_meta: ResMut<TextModeSpriteMeta>,
     sprite_pipeline: Res<TextModeSpritePipeline>,
     mut image_bind_groups: ResMut<TextModeImageBindGroups>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     extracted_sprites: Res<ExtractedTextModeSprites>,
+    extracted_slices: Res<ExtractedTextModeSlices>,
     mut phases: ResMut<ViewSortedRenderPhases<Transparent2d>>,
-    events: Res<SpriteAssetEvents>,
+    events: Res<TextModeSpriteAssetEvents>,
+    mut batches: ResMut<TextModeSpriteBatches>,
 ) {
     // If an image has changed, the GpuImage has (probably) changed
     for event in &events.images {
         match event {
             AssetEvent::Added { .. } |
+            // Images don't have dependencies
             AssetEvent::LoadedWithDependencies { .. } => {}
             AssetEvent::Unused { id } | AssetEvent::Modified { id } | AssetEvent::Removed { id } => {
                 image_bind_groups.values.remove(id);
@@ -685,7 +746,7 @@ pub fn prepare_text_mode_sprite_image_bind_groups(
         };
     }
 
-    let mut batches: Vec<(Entity, TextModeSpriteBatch)> = Vec::with_capacity(*previous_len);
+    batches.clear();
 
     // Clear the sprite instances
     sprite_meta.sprite_instance_buffer.clear();
@@ -695,152 +756,212 @@ pub fn prepare_text_mode_sprite_image_bind_groups(
 
     let image_bind_groups = &mut *image_bind_groups;
 
-    for transparent_phase in phases.values_mut() {
+    for (retained_view, transparent_phase) in phases.iter_mut() {
+        let mut current_batch = None;
         let mut batch_item_index = 0;
         let mut batch_image_size = Vec2::ZERO;
-        let mut batch_image_handle = AssetId::invalid();
+        let mut batch_image_handle = None;
 
+        // Iterate through the phase items and detect when successive sprites that can be batched.
         for item_index in 0..transparent_phase.items.len() {
             let item = &transparent_phase.items[item_index];
-            let Some(extracted_sprite) = extracted_sprites.sprites.get(&item.entity) else {
-                batch_image_handle = AssetId::invalid();
+
+            let Some(extracted_sprite) = extracted_sprites
+                .sprites
+                .get(item.extracted_index)
+                .filter(|extracted_sprite| extracted_sprite.render_entity == item.entity())
+            else {
+                // If there is a phase item that is not a text mode sprite, then we must start a new
+                // batch to draw the other phase item(s) and to respect draw order. This can be
+                // done by invalidating the batch_image_handle
+                batch_image_handle = None;
                 continue;
             };
 
-            let batch_image_changed = batch_image_handle != extracted_sprite.image_handle_id;
-            if batch_image_changed {
+            if batch_image_handle != Some(extracted_sprite.image_handle_id) {
                 let Some(gpu_image) = gpu_images.get(extracted_sprite.image_handle_id) else {
                     continue;
                 };
 
-                batch_image_size = gpu_image.size.as_vec2();
-                batch_image_handle = extracted_sprite.image_handle_id;
+                batch_image_size = gpu_image.size_2d().as_vec2();
+                let image_handle = extracted_sprite.image_handle_id;
+                batch_image_handle = Some(image_handle);
                 image_bind_groups
                     .values
-                    .entry(batch_image_handle)
+                    .entry(image_handle)
                     .or_insert_with(|| {
                         render_device.create_bind_group(
                             "text_mode_sprite_material_bind_group",
-                            &sprite_pipeline.material_layout,
+                            &pipeline_cache.get_bind_group_layout(&sprite_pipeline.material_layout),
                             &BindGroupEntries::sequential((
                                 &gpu_image.texture_view,
                                 &gpu_image.sampler,
                             )),
                         )
                     });
-            }
 
-            // By default, the size of the quad is the size of the texture
-            let mut quad_size = batch_image_size;
-
-            // Calculate vertex data for this item
-            let mut uv_offset_scale: Vec4;
-
-            // If a rect is specified, adjust UVs and the size of the quad
-            if let Some(rect) = extracted_sprite.rect {
-                let rect_size = rect.size();
-                uv_offset_scale = Vec4::new(
-                    rect.min.x / batch_image_size.x,
-                    rect.max.y / batch_image_size.y,
-                    rect_size.x / batch_image_size.x,
-                    -rect_size.y / batch_image_size.y,
-                );
-                quad_size = rect_size;
-            } else {
-                uv_offset_scale = Vec4::new(0.0, 1.0, 1.0, -1.0);
-            }
-
-            if extracted_sprite.flip_x {
-                uv_offset_scale.x += uv_offset_scale.z;
-                uv_offset_scale.z *= -1.0;
-            }
-            if extracted_sprite.flip_y {
-                uv_offset_scale.y += uv_offset_scale.w;
-                uv_offset_scale.w *= -1.0;
-            }
-
-            // Override the size if a custom one is specified
-            if let Some(custom_size) = extracted_sprite.custom_size {
-                quad_size = custom_size;
-            }
-
-            let translation = quad_size * (-extracted_sprite.anchor - Vec2::splat(0.5));
-            let scale = quad_size.extend(1.0);
-
-            let rotation = extracted_sprite.rotation % 4;
-            let rotation_affine = if rotation == 0 { Affine3A::IDENTITY } else {
-                Affine3A::from_translation((quad_size * Vec2::new(0.5, 0.5)).extend(0.0))
-                    * Affine3A::from_rotation_z(PI / 2.0 * f32::from(rotation))
-                    * Affine3A::from_translation((quad_size * Vec2::new(-0.5, -0.5)).extend(0.0))
-            };
-
-            let transform =
-                extracted_sprite.transform.affine()
-                * Affine3A::from_translation(translation.extend(0.0))
-                * rotation_affine
-                * Affine3A::from_scale(scale)
-            ;
-
-            // Store the vertex data and add the item to the render phase
-            sprite_meta
-                .sprite_instance_buffer
-                .push(TextModeSpriteInstance::from(
-                    &transform,
-                    &extracted_sprite.bg,
-                    &extracted_sprite.fg,
-                    extracted_sprite.alpha,
-                    &uv_offset_scale,
-                ));
-
-            if batch_image_changed {
                 batch_item_index = item_index;
-
-                batches.push((
-                    item.entity,
+                current_batch = Some(batches.entry((*retained_view, item.entity())).insert(
                     TextModeSpriteBatch {
-                        image_handle_id: batch_image_handle,
+                        image_handle_id: image_handle,
                         range: index..index,
                     },
                 ));
             }
 
+            let rotation = extracted_sprite.rotation % 4;
+
+            match extracted_sprite.kind {
+                TextModeExtractedSpriteKind::Single {
+                    anchor,
+                    rect,
+                    custom_size,
+                } => {
+                    // By default, the size of the quad is the size of the texture
+                    let mut quad_size = batch_image_size;
+
+                    // Calculate vertex data for this item
+                    // If a rect is specified, adjust UVs and the size of the quad
+                    let mut uv_offset_scale = if let Some(rect) = rect {
+                        let rect_size = rect.size();
+                        quad_size = rect_size;
+                        Vec4::new(
+                            rect.min.x / batch_image_size.x,
+                            rect.max.y / batch_image_size.y,
+                            rect_size.x / batch_image_size.x,
+                            -rect_size.y / batch_image_size.y,
+                        )
+                    } else {
+                        Vec4::new(0.0, 1.0, 1.0, -1.0)
+                    };
+
+                    if extracted_sprite.flip_x {
+                        uv_offset_scale.x += uv_offset_scale.z;
+                        uv_offset_scale.z *= -1.0;
+                    }
+                    if extracted_sprite.flip_y {
+                        uv_offset_scale.y += uv_offset_scale.w;
+                        uv_offset_scale.w *= -1.0;
+                    }
+
+                    // Override the size if a custom one is specified
+                    quad_size = custom_size.unwrap_or(quad_size);
+
+                    let translation = quad_size * (-anchor - Vec2::splat(0.5));
+                    let scale = quad_size.extend(1.0);
+
+                    let rotation_affine = rotation_affine(rotation, quad_size);
+
+                    let transform = extracted_sprite.transform.affine()
+                        * Affine3A::from_translation(translation.extend(0.0))
+                        * rotation_affine
+                        * Affine3A::from_scale(scale);
+
+                    // Store the vertex data and add the item to the render phase
+                    sprite_meta
+                        .sprite_instance_buffer
+                        .push(TextModeSpriteInstance::from(
+                            &transform,
+                            &extracted_sprite.bg,
+                            &extracted_sprite.fg,
+                            extracted_sprite.alpha,
+                            &uv_offset_scale,
+                        ));
+
+                    current_batch.as_mut().unwrap().get_mut().range.end += 1;
+                    index += 1;
+                }
+                TextModeExtractedSpriteKind::Slices { ref indices } => {
+                    for i in indices.clone() {
+                        let slice = &extracted_slices.slices[i];
+                        let rect = slice.rect;
+                        let rect_size = rect.size();
+
+                        // Calculate vertex data for this item
+                        let mut uv_offset_scale = Vec4::new(
+                            rect.min.x / batch_image_size.x,
+                            rect.max.y / batch_image_size.y,
+                            rect_size.x / batch_image_size.x,
+                            -rect_size.y / batch_image_size.y,
+                        );
+
+                        if extracted_sprite.flip_x {
+                            uv_offset_scale.x += uv_offset_scale.z;
+                            uv_offset_scale.z *= -1.0;
+                        }
+                        if extracted_sprite.flip_y {
+                            uv_offset_scale.y += uv_offset_scale.w;
+                            uv_offset_scale.w *= -1.0;
+                        }
+
+                        let rotation_affine = rotation_affine(rotation, slice.size);
+
+                        let transform = extracted_sprite.transform.affine()
+                            * Affine3A::from_translation(
+                                (slice.size * -Vec2::splat(0.5) + slice.offset).extend(0.0),
+                            )
+                            * rotation_affine
+                            * Affine3A::from_scale(slice.size.extend(1.0));
+
+                        // Store the vertex data and add the item to the render phase
+                        sprite_meta
+                            .sprite_instance_buffer
+                            .push(TextModeSpriteInstance::from(
+                                &transform,
+                                &extracted_sprite.bg,
+                                &extracted_sprite.fg,
+                                extracted_sprite.alpha,
+                                &uv_offset_scale,
+                            ));
+
+                        current_batch.as_mut().unwrap().get_mut().range.end += 1;
+                        index += 1;
+                    }
+                }
+            }
             transparent_phase.items[batch_item_index]
                 .batch_range_mut()
                 .end += 1;
-            batches.last_mut().unwrap().1.range.end += 1;
-            index += 1;
+        }
+        sprite_meta
+            .sprite_instance_buffer
+            .write_buffer(&render_device, &render_queue);
+
+        if sprite_meta.sprite_index_buffer.len() != 6 {
+            sprite_meta.sprite_index_buffer.clear();
+
+            // NOTE: This code is creating 6 indices pointing to 4 vertices.
+            // The vertices form the corners of a quad based on their two least significant bits.
+            // 10   11
+            //
+            // 00   01
+            // The sprite shader can then use the two least significant bits as the vertex index.
+            // The rest of the properties to transform the vertex positions and UVs (which are
+            // implicit) are baked into the instance transform, and UV offset and scale.
+            sprite_meta.sprite_index_buffer.push(2);
+            sprite_meta.sprite_index_buffer.push(0);
+            sprite_meta.sprite_index_buffer.push(1);
+            sprite_meta.sprite_index_buffer.push(1);
+            sprite_meta.sprite_index_buffer.push(3);
+            sprite_meta.sprite_index_buffer.push(2);
+
+            sprite_meta
+                .sprite_index_buffer
+                .write_buffer(&render_device, &render_queue);
         }
     }
-    sprite_meta
-        .sprite_instance_buffer
-        .write_buffer(&render_device, &render_queue);
+}
 
-    if sprite_meta.sprite_index_buffer.len() != 6 {
-        sprite_meta.sprite_index_buffer.clear();
-
-        // NOTE: This code is creating 6 indices pointing to 4 vertices.
-        // The vertices form the corners of a quad based on their two least significant bits.
-        // 10   11
-        //
-        // 00   01
-        // The sprite shader can then use the two least significant bits as the vertex index.
-        // The rest of the properties to transform the vertex positions and UVs (which are
-        // implicit) are baked into the instance transform, and UV offset and scale.
-        // See bevy_sprite/src/render/sprite.wgsl for the details.
-        sprite_meta.sprite_index_buffer.push(2);
-        sprite_meta.sprite_index_buffer.push(0);
-        sprite_meta.sprite_index_buffer.push(1);
-        sprite_meta.sprite_index_buffer.push(1);
-        sprite_meta.sprite_index_buffer.push(3);
-        sprite_meta.sprite_index_buffer.push(2);
-
-        sprite_meta
-            .sprite_index_buffer
-            .write_buffer(&render_device, &render_queue);
+/// Builds the affine transform for `rotation` quarter turns around the center of a `quad_size` quad.
+#[inline]
+fn rotation_affine(rotation: u8, quad_size: Vec2) -> Affine3A {
+    if rotation == 0 {
+        Affine3A::IDENTITY
+    } else {
+        Affine3A::from_translation((quad_size * Vec2::new(0.5, 0.5)).extend(0.0))
+            * Affine3A::from_rotation_z(PI / 2.0 * f32::from(rotation))
+            * Affine3A::from_translation((quad_size * Vec2::new(-0.5, -0.5)).extend(0.0))
     }
-
-    *previous_len = batches.len();
-    commands.insert_or_spawn_batch(batches);
 }
 
 pub type DrawTextModeSprite = (
@@ -858,7 +979,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetTextModeSpriteViewBin
 
     fn render<'w>(
         _item: &P,
-        (view_uniform, sprite_view_bind_group): ROQueryItem<'w, Self::ViewQuery>,
+        (view_uniform, sprite_view_bind_group): ROQueryItem<'w, '_, Self::ViewQuery>,
         _entity: Option<()>,
         _param: SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
@@ -867,22 +988,23 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetTextModeSpriteViewBin
         RenderCommandResult::Success
     }
 }
+
 pub struct SetTextModeSpriteTextureBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetTextModeSpriteTextureBindGroup<I> {
-    type Param = SRes<TextModeImageBindGroups>;
-    type ViewQuery = ();
-    type ItemQuery = Read<TextModeSpriteBatch>;
+    type Param = (SRes<TextModeImageBindGroups>, SRes<TextModeSpriteBatches>);
+    type ViewQuery = Read<ExtractedView>;
+    type ItemQuery = ();
 
     fn render<'w>(
-        _item: &P,
-        _view: (),
-        batch: Option<&'_ TextModeSpriteBatch>,
-        image_bind_groups: SystemParamItem<'w, '_, Self::Param>,
+        item: &P,
+        view: ROQueryItem<'w, '_, Self::ViewQuery>,
+        _entity: Option<()>,
+        (image_bind_groups, batches): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let image_bind_groups = image_bind_groups.into_inner();
-        let Some(batch) = batch else {
-            return RenderCommandResult::Failure;
+        let Some(batch) = batches.get(&(view.retained_view_entity, item.entity())) else {
+            return RenderCommandResult::Skip;
         };
 
         pass.set_bind_group(
@@ -899,25 +1021,24 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetTextModeSpriteTexture
 
 pub struct DrawTextModeSpriteBatch;
 impl<P: PhaseItem> RenderCommand<P> for DrawTextModeSpriteBatch {
-    type Param = SRes<TextModeSpriteMeta>;
-    type ViewQuery = ();
-    type ItemQuery = Read<TextModeSpriteBatch>;
+    type Param = (SRes<TextModeSpriteMeta>, SRes<TextModeSpriteBatches>);
+    type ViewQuery = Read<ExtractedView>;
+    type ItemQuery = ();
 
     fn render<'w>(
-        _item: &P,
-        _view: (),
-        batch: Option<&'_ TextModeSpriteBatch>,
-        sprite_meta: SystemParamItem<'w, '_, Self::Param>,
+        item: &P,
+        view: ROQueryItem<'w, '_, Self::ViewQuery>,
+        _entity: Option<()>,
+        (sprite_meta, batches): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
         let sprite_meta = sprite_meta.into_inner();
-        let Some(batch) = batch else {
-            return RenderCommandResult::Failure;
+        let Some(batch) = batches.get(&(view.retained_view_entity, item.entity())) else {
+            return RenderCommandResult::Skip;
         };
 
         pass.set_index_buffer(
             sprite_meta.sprite_index_buffer.buffer().unwrap().slice(..),
-            0,
             IndexFormat::Uint32,
         );
         pass.set_vertex_buffer(
