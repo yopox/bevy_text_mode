@@ -1,9 +1,6 @@
 [dependencies.bevy]
 version = "0.19"
 
-[dependencies.bitflags]
-version = "2.13"
-
 [dependencies.bytemuck]
 version = "1.5"
 features = ["derive"]
@@ -12,7 +9,7 @@ features = ["derive"]
 version = "0.5"
 
 [package]
-authors = ["yopox yopoxdev@gmail.com"]
+authors = ["yopox dev@yopox.fr"]
 description = "Bevy plugin adding a texture atlas sprite with configurable background and foreground colors."
 edition = "2021"
 exclude = ["assets/", "examples/"]
