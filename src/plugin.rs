@@ -2,12 +2,12 @@ use std::f32::consts::PI;
 use std::ops::Range;
 
 use bevy::asset::{
-    embedded_asset, load_embedded_asset, AssetEvent, AssetId, AssetServer, Assets, Handle,
+    embedded_asset, load_embedded_asset, AssetId, AssetServer, Assets, Handle,
 };
 use bevy::color::{ColorToComponents, LinearRgba};
 use bevy::core_pipeline::core_2d::{Transparent2d, CORE_2D_DEPTH_FORMAT};
 use bevy::core_pipeline::tonemapping::{
-    get_lut_bind_group_layout_entries, get_lut_bindings, DebandDither, Tonemapping, TonemappingLuts,
+    get_lut_bind_group_layout_entries, DebandDither, Tonemapping,
 };
 use bevy::ecs::query::ROQueryItem;
 use bevy::ecs::system::{lifetimeless::*, SystemParamItem};
@@ -23,16 +23,18 @@ use bevy::render::render_resource::binding_types::{sampler, texture_2d, uniform_
 use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::render::sync_world::{RenderEntity, SyncToRenderWorld};
-use bevy::render::texture::{FallbackImage, GpuImage};
+use bevy::render::texture::GpuImage;
 use bevy::render::view::{
-    texture_format_from_code, texture_format_to_code, ExtractedView, Msaa, RenderVisibleEntities,
-    RetainedViewEntity, ViewUniform, ViewUniformOffset, ViewUniforms,
+    ExtractedView, Msaa, RenderVisibleEntities, RetainedViewEntity, ViewUniform,
 };
 use bevy::render::{
     Extract, ExtractSchedule, GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
 };
 use bevy::shader::{Shader, ShaderDefVal};
-use bevy::sprite_render::{queue_material2d_meshes, ColorMaterial, SpriteSystems};
+use bevy::sprite_render::{
+    queue_material2d_meshes, ColorMaterial, SetSpriteViewBindGroup, SpriteAssetEvents,
+    SpritePipelineKey, SpriteSystems,
+};
 use bevy::transform::components::GlobalTransform;
 use bytemuck::{Pod, Zeroable};
 use fixedbitset::FixedBitSet;
@@ -67,16 +69,12 @@ impl Plugin for TextModePlugin {
                 .init_resource::<TextModeSpriteMeta>()
                 .init_resource::<ExtractedTextModeSprites>()
                 .init_resource::<ExtractedTextModeSlices>()
-                .init_resource::<TextModeSpriteAssetEvents>()
                 .init_resource::<TextModeSpriteBatches>()
                 .add_render_command::<Transparent2d, DrawTextModeSprite>()
                 .add_systems(RenderStartup, init_text_mode_sprite_pipeline)
                 .add_systems(
                     ExtractSchedule,
-                    (
-                        extract_text_mode_sprites.in_set(SpriteSystems::ExtractSprites),
-                        extract_text_mode_sprite_events,
-                    ),
+                    extract_text_mode_sprites.in_set(SpriteSystems::ExtractSprites),
                 )
                 .add_systems(
                     Render,
@@ -85,8 +83,6 @@ impl Plugin for TextModePlugin {
                             .in_set(RenderSystems::Queue)
                             .ambiguous_with(queue_material2d_meshes::<ColorMaterial>),
                         prepare_text_mode_sprite_image_bind_groups
-                            .in_set(RenderSystems::PrepareBindGroups),
-                        prepare_text_mode_sprite_view_bind_groups
                             .in_set(RenderSystems::PrepareBindGroups),
                     ),
                 );
@@ -133,76 +129,13 @@ pub fn init_text_mode_sprite_pipeline(mut commands: Commands, asset_server: Res<
     });
 }
 
-bitflags::bitflags! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct TextModeSpritePipelineKey: u32 {
-        const NONE                              = 0;
-        const TONEMAP_IN_SHADER                 = 1 << 0;
-        const DEBAND_DITHER                     = 1 << 1;
-        const SRGB_COMPOSITING                  = 1 << 2;
-        const OKLAB_COMPOSITING                 = 1 << 3;
-        const COLOR_TARGET_FORMAT_RESERVED_BITS = Self::COLOR_TARGET_FORMAT_MASK_BITS << Self::COLOR_TARGET_FORMAT_SHIFT_BITS;
-        const MSAA_RESERVED_BITS                = Self::MSAA_MASK_BITS << Self::MSAA_SHIFT_BITS;
-        const TONEMAP_METHOD_RESERVED_BITS      = Self::TONEMAP_METHOD_MASK_BITS << Self::TONEMAP_METHOD_SHIFT_BITS;
-        const TONEMAP_METHOD_NONE               = 0 << Self::TONEMAP_METHOD_SHIFT_BITS;
-        const TONEMAP_METHOD_REINHARD           = 1 << Self::TONEMAP_METHOD_SHIFT_BITS;
-        const TONEMAP_METHOD_REINHARD_LUMINANCE = 2 << Self::TONEMAP_METHOD_SHIFT_BITS;
-        const TONEMAP_METHOD_ACES_FITTED        = 3 << Self::TONEMAP_METHOD_SHIFT_BITS;
-        const TONEMAP_METHOD_AGX                = 4 << Self::TONEMAP_METHOD_SHIFT_BITS;
-        const TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM = 5 << Self::TONEMAP_METHOD_SHIFT_BITS;
-        const TONEMAP_METHOD_TONY_MC_MAPFACE    = 6 << Self::TONEMAP_METHOD_SHIFT_BITS;
-        const TONEMAP_METHOD_BLENDER_FILMIC     = 7 << Self::TONEMAP_METHOD_SHIFT_BITS;
-        const TONEMAP_METHOD_PBR_NEUTRAL        = 8 << Self::TONEMAP_METHOD_SHIFT_BITS;
-    }
-}
-
-impl TextModeSpritePipelineKey {
-    const COLOR_TARGET_FORMAT_MASK_BITS: u32 = bevy::render::view::COLOR_TARGET_FORMAT_MASK_BITS;
-    const COLOR_TARGET_FORMAT_SHIFT_BITS: u32 = 4;
-    const MSAA_MASK_BITS: u32 = 0b111;
-    const MSAA_SHIFT_BITS: u32 = 32 - Self::MSAA_MASK_BITS.count_ones();
-    const TONEMAP_METHOD_MASK_BITS: u32 = 0b1111;
-    const TONEMAP_METHOD_SHIFT_BITS: u32 =
-        Self::MSAA_SHIFT_BITS - Self::TONEMAP_METHOD_MASK_BITS.count_ones();
-
-    #[inline]
-    pub const fn from_msaa_samples(msaa_samples: u32) -> Self {
-        let msaa_bits =
-            (msaa_samples.trailing_zeros() & Self::MSAA_MASK_BITS) << Self::MSAA_SHIFT_BITS;
-        Self::from_bits_retain(msaa_bits)
-    }
-
-    #[inline]
-    pub const fn msaa_samples(&self) -> u32 {
-        1 << ((self.bits() >> Self::MSAA_SHIFT_BITS) & Self::MSAA_MASK_BITS)
-    }
-
-    #[inline]
-    pub fn from_target_format(format: TextureFormat) -> Self {
-        let code = texture_format_to_code(format)
-            .expect("Texture format is not supported by the pipeline") as u32;
-        Self::from_bits_retain(
-            (code & Self::COLOR_TARGET_FORMAT_MASK_BITS) << Self::COLOR_TARGET_FORMAT_SHIFT_BITS,
-        )
-    }
-
-    #[inline]
-    pub fn target_format(&self) -> TextureFormat {
-        let code = ((self.bits() >> Self::COLOR_TARGET_FORMAT_SHIFT_BITS)
-            & Self::COLOR_TARGET_FORMAT_MASK_BITS) as u8;
-        texture_format_from_code(code)
-            .expect("Unknown bits in `COLOR_TARGET_FORMAT_MASK_BITS` of the pipeline key")
-    }
-}
-
 impl SpecializedRenderPipeline for TextModeSpritePipeline {
-    type Key = TextModeSpritePipelineKey;
+    type Key = SpritePipelineKey;
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
         let mut shader_defs = Vec::new();
 
-        if key.contains(TextModeSpritePipelineKey::TONEMAP_IN_SHADER) {
+        if key.contains(SpritePipelineKey::TONEMAP_IN_SHADER) {
             shader_defs.push("TONEMAP_IN_SHADER".into());
             shader_defs.push(ShaderDefVal::UInt(
                 "TONEMAPPING_LUT_TEXTURE_BINDING_INDEX".into(),
@@ -213,40 +146,40 @@ impl SpecializedRenderPipeline for TextModeSpritePipeline {
                 2,
             ));
 
-            let method = key.intersection(TextModeSpritePipelineKey::TONEMAP_METHOD_RESERVED_BITS);
+            let method = key.intersection(SpritePipelineKey::TONEMAP_METHOD_RESERVED_BITS);
 
-            if method == TextModeSpritePipelineKey::TONEMAP_METHOD_NONE {
+            if method == SpritePipelineKey::TONEMAP_METHOD_NONE {
                 shader_defs.push("TONEMAP_METHOD_NONE".into());
-            } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_REINHARD {
+            } else if method == SpritePipelineKey::TONEMAP_METHOD_REINHARD {
                 shader_defs.push("TONEMAP_METHOD_REINHARD".into());
-            } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_REINHARD_LUMINANCE {
+            } else if method == SpritePipelineKey::TONEMAP_METHOD_REINHARD_LUMINANCE {
                 shader_defs.push("TONEMAP_METHOD_REINHARD_LUMINANCE".into());
-            } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_ACES_FITTED {
+            } else if method == SpritePipelineKey::TONEMAP_METHOD_ACES_FITTED {
                 shader_defs.push("TONEMAP_METHOD_ACES_FITTED".into());
-            } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_AGX {
+            } else if method == SpritePipelineKey::TONEMAP_METHOD_AGX {
                 shader_defs.push("TONEMAP_METHOD_AGX".into());
             } else if method
-                == TextModeSpritePipelineKey::TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM
+                == SpritePipelineKey::TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM
             {
                 shader_defs.push("TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM".into());
-            } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_BLENDER_FILMIC {
+            } else if method == SpritePipelineKey::TONEMAP_METHOD_BLENDER_FILMIC {
                 shader_defs.push("TONEMAP_METHOD_BLENDER_FILMIC".into());
-            } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_TONY_MC_MAPFACE {
+            } else if method == SpritePipelineKey::TONEMAP_METHOD_TONY_MC_MAPFACE {
                 shader_defs.push("TONEMAP_METHOD_TONY_MC_MAPFACE".into());
-            } else if method == TextModeSpritePipelineKey::TONEMAP_METHOD_PBR_NEUTRAL {
+            } else if method == SpritePipelineKey::TONEMAP_METHOD_PBR_NEUTRAL {
                 shader_defs.push("TONEMAP_METHOD_PBR_NEUTRAL".into());
             }
 
             // Debanding is tied to tonemapping in the shader, cannot run without it.
-            if key.contains(TextModeSpritePipelineKey::DEBAND_DITHER) {
+            if key.contains(SpritePipelineKey::DEBAND_DITHER) {
                 shader_defs.push("DEBAND_DITHER".into());
             }
         }
 
-        if key.contains(TextModeSpritePipelineKey::SRGB_COMPOSITING) {
+        if key.contains(SpritePipelineKey::SRGB_COMPOSITING) {
             shader_defs.push("SRGB_OUTPUT".into());
         }
-        if key.contains(TextModeSpritePipelineKey::OKLAB_COMPOSITING) {
+        if key.contains(SpritePipelineKey::OKLAB_COMPOSITING) {
             shader_defs.push("OKLAB_OUTPUT".into());
         }
 
@@ -394,22 +327,6 @@ pub struct ExtractedTextModeSlices {
     pub slices: Vec<TextModeExtractedSlice>,
 }
 
-#[derive(Resource, Default)]
-pub struct TextModeSpriteAssetEvents {
-    pub images: Vec<AssetEvent<Image>>,
-}
-
-pub fn extract_text_mode_sprite_events(
-    mut events: ResMut<TextModeSpriteAssetEvents>,
-    mut image_events: Extract<MessageReader<AssetEvent<Image>>>,
-) {
-    let TextModeSpriteAssetEvents { ref mut images } = *events;
-    images.clear();
-
-    for event in image_events.read() {
-        images.push(*event);
-    }
-}
 
 /// See [bevy::sprite_render::extract_sprites]
 pub fn extract_text_mode_sprites(
@@ -549,11 +466,6 @@ impl Default for TextModeSpriteMeta {
     }
 }
 
-#[derive(Component)]
-pub struct TextModeSpriteViewBindGroup {
-    pub value: BindGroup,
-}
-
 #[derive(Resource, Deref, DerefMut, Default)]
 pub struct TextModeSpriteBatches(HashMap<(RetainedViewEntity, Entity), TextModeSpriteBatch>);
 
@@ -595,52 +507,52 @@ pub fn queue_text_mode_sprites(
             continue;
         };
 
-        let msaa_key = TextModeSpritePipelineKey::from_msaa_samples(msaa.samples());
+        let msaa_key = SpritePipelineKey::from_msaa_samples(msaa.samples());
         let mut view_key =
-            TextModeSpritePipelineKey::from_target_format(view.target_format) | msaa_key;
+            SpritePipelineKey::from_target_format(view.target_format) | msaa_key;
 
         if camera
             .compositing_space
             .is_some_and(|s| s == bevy::camera::CompositingSpace::Srgb)
         {
-            view_key |= TextModeSpritePipelineKey::SRGB_COMPOSITING;
+            view_key |= SpritePipelineKey::SRGB_COMPOSITING;
         }
         if camera
             .compositing_space
             .is_some_and(|s| s == bevy::camera::CompositingSpace::Oklab)
         {
-            view_key |= TextModeSpritePipelineKey::OKLAB_COMPOSITING;
+            view_key |= SpritePipelineKey::OKLAB_COMPOSITING;
         }
 
         if !camera.hdr {
             if let Some(tonemapping) = tonemapping {
-                view_key |= TextModeSpritePipelineKey::TONEMAP_IN_SHADER;
+                view_key |= SpritePipelineKey::TONEMAP_IN_SHADER;
                 view_key |= match tonemapping {
-                    Tonemapping::None => TextModeSpritePipelineKey::TONEMAP_METHOD_NONE,
-                    Tonemapping::Reinhard => TextModeSpritePipelineKey::TONEMAP_METHOD_REINHARD,
+                    Tonemapping::None => SpritePipelineKey::TONEMAP_METHOD_NONE,
+                    Tonemapping::Reinhard => SpritePipelineKey::TONEMAP_METHOD_REINHARD,
                     Tonemapping::ReinhardLuminance => {
-                        TextModeSpritePipelineKey::TONEMAP_METHOD_REINHARD_LUMINANCE
+                        SpritePipelineKey::TONEMAP_METHOD_REINHARD_LUMINANCE
                     }
                     Tonemapping::AcesFitted => {
-                        TextModeSpritePipelineKey::TONEMAP_METHOD_ACES_FITTED
+                        SpritePipelineKey::TONEMAP_METHOD_ACES_FITTED
                     }
-                    Tonemapping::AgX => TextModeSpritePipelineKey::TONEMAP_METHOD_AGX,
+                    Tonemapping::AgX => SpritePipelineKey::TONEMAP_METHOD_AGX,
                     Tonemapping::SomewhatBoringDisplayTransform => {
-                        TextModeSpritePipelineKey::TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM
+                        SpritePipelineKey::TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM
                     }
                     Tonemapping::TonyMcMapface => {
-                        TextModeSpritePipelineKey::TONEMAP_METHOD_TONY_MC_MAPFACE
+                        SpritePipelineKey::TONEMAP_METHOD_TONY_MC_MAPFACE
                     }
                     Tonemapping::BlenderFilmic => {
-                        TextModeSpritePipelineKey::TONEMAP_METHOD_BLENDER_FILMIC
+                        SpritePipelineKey::TONEMAP_METHOD_BLENDER_FILMIC
                     }
                     Tonemapping::KhronosPbrNeutral => {
-                        TextModeSpritePipelineKey::TONEMAP_METHOD_PBR_NEUTRAL
+                        SpritePipelineKey::TONEMAP_METHOD_PBR_NEUTRAL
                     }
                 };
             }
             if let Some(DebandDither::Enabled) = dither {
-                view_key |= TextModeSpritePipelineKey::DEBAND_DITHER;
+                view_key |= SpritePipelineKey::DEBAND_DITHER;
             }
         }
 
@@ -689,37 +601,6 @@ pub fn queue_text_mode_sprites(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn prepare_text_mode_sprite_view_bind_groups(
-    mut commands: Commands,
-    render_device: Res<RenderDevice>,
-    pipeline_cache: Res<PipelineCache>,
-    sprite_pipeline: Res<TextModeSpritePipeline>,
-    view_uniforms: Res<ViewUniforms>,
-    views: Query<(Entity, &Tonemapping), With<ExtractedView>>,
-    tonemapping_luts: Res<TonemappingLuts>,
-    images: Res<RenderAssets<GpuImage>>,
-    fallback_image: Res<FallbackImage>,
-) {
-    let Some(view_binding) = view_uniforms.uniforms.binding() else {
-        return;
-    };
-
-    for (entity, tonemapping) in &views {
-        let lut_bindings =
-            get_lut_bindings(&images, &tonemapping_luts, tonemapping, &fallback_image);
-        let view_bind_group = render_device.create_bind_group(
-            "text_mode_sprite_view_bind_group",
-            &pipeline_cache.get_bind_group_layout(&sprite_pipeline.view_layout),
-            &BindGroupEntries::sequential((view_binding.clone(), lut_bindings.0, lut_bindings.1)),
-        );
-
-        commands.entity(entity).insert(TextModeSpriteViewBindGroup {
-            value: view_bind_group,
-        });
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 pub fn prepare_text_mode_sprite_image_bind_groups(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
@@ -731,7 +612,7 @@ pub fn prepare_text_mode_sprite_image_bind_groups(
     extracted_sprites: Res<ExtractedTextModeSprites>,
     extracted_slices: Res<ExtractedTextModeSlices>,
     mut phases: ResMut<ViewSortedRenderPhases<Transparent2d>>,
-    events: Res<TextModeSpriteAssetEvents>,
+    events: Res<SpriteAssetEvents>,
     mut batches: ResMut<TextModeSpriteBatches>,
 ) {
     // If an image has changed, the GpuImage has (probably) changed
@@ -966,28 +847,10 @@ fn rotation_affine(rotation: u8, quad_size: Vec2) -> Affine3A {
 
 pub type DrawTextModeSprite = (
     SetItemPipeline,
-    SetTextModeSpriteViewBindGroup<0>,
+    SetSpriteViewBindGroup<0>,
     SetTextModeSpriteTextureBindGroup<1>,
     DrawTextModeSpriteBatch,
 );
-
-pub struct SetTextModeSpriteViewBindGroup<const I: usize>;
-impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetTextModeSpriteViewBindGroup<I> {
-    type Param = ();
-    type ViewQuery = (Read<ViewUniformOffset>, Read<TextModeSpriteViewBindGroup>);
-    type ItemQuery = ();
-
-    fn render<'w>(
-        _item: &P,
-        (view_uniform, sprite_view_bind_group): ROQueryItem<'w, '_, Self::ViewQuery>,
-        _entity: Option<()>,
-        _param: SystemParamItem<'w, '_, Self::Param>,
-        pass: &mut TrackedRenderPass<'w>,
-    ) -> RenderCommandResult {
-        pass.set_bind_group(I, &sprite_view_bind_group.value, &[view_uniform.offset]);
-        RenderCommandResult::Success
-    }
-}
 
 pub struct SetTextModeSpriteTextureBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetTextModeSpriteTextureBindGroup<I> {
